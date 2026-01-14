@@ -1,9 +1,13 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::RwLock;
 use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
+use tracing::Instrument;
+use tracing::instrument;
+use tracing::trace_span;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
@@ -15,8 +19,8 @@ use crate::tools::router::ToolCall;
 use crate::tools::router::ToolRouter;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
-use codex_utils_readiness::Readiness;
 
+#[derive(Clone)]
 pub(crate) struct ToolCallRuntime {
     router: Arc<ToolRouter>,
     session: Arc<Session>,
@@ -41,8 +45,9 @@ impl ToolCallRuntime {
         }
     }
 
+    #[instrument(level = "trace", skip_all, fields(call = ?call))]
     pub(crate) fn handle_tool_call(
-        &self,
+        self,
         call: ToolCall,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<ResponseInputItem, CodexErr>> {
@@ -53,17 +58,25 @@ impl ToolCallRuntime {
         let turn = Arc::clone(&self.turn_context);
         let tracker = Arc::clone(&self.tracker);
         let lock = Arc::clone(&self.parallel_execution);
-        let aborted_response = Self::aborted_response(&call);
-        let readiness = self.turn_context.tool_call_gate.clone();
+        let started = Instant::now();
+
+        let dispatch_span = trace_span!(
+            "dispatch_tool_call",
+            otel.name = call.tool_name.as_str(),
+            tool_name = call.tool_name.as_str(),
+            call_id = call.call_id.as_str(),
+            aborted = false,
+        );
 
         let handle: AbortOnDropHandle<Result<ResponseInputItem, FunctionCallError>> =
             AbortOnDropHandle::new(tokio::spawn(async move {
                 tokio::select! {
-                    _ = cancellation_token.cancelled() => Ok(aborted_response),
+                    _ = cancellation_token.cancelled() => {
+                        let secs = started.elapsed().as_secs_f32().max(0.1);
+                        dispatch_span.record("aborted", true);
+                        Ok(Self::aborted_response(&call, secs))
+                    },
                     res = async {
-                        tracing::info!("waiting for tool gate");
-                        readiness.wait_ready().await;
-                        tracing::info!("tool gate released");
                         let _guard = if supports_parallel {
                             Either::Left(lock.read().await)
                         } else {
@@ -71,7 +84,8 @@ impl ToolCallRuntime {
                         };
 
                         router
-                            .dispatch_tool_call(session, turn, tracker, call)
+                            .dispatch_tool_call(session, turn, tracker, call.clone())
+                            .instrument(dispatch_span.clone())
                             .await
                     } => res,
                 }
@@ -87,27 +101,37 @@ impl ToolCallRuntime {
                 ))),
             }
         }
+        .in_current_span()
     }
 }
 
 impl ToolCallRuntime {
-    fn aborted_response(call: &ToolCall) -> ResponseInputItem {
+    fn aborted_response(call: &ToolCall, secs: f32) -> ResponseInputItem {
         match &call.payload {
             ToolPayload::Custom { .. } => ResponseInputItem::CustomToolCallOutput {
                 call_id: call.call_id.clone(),
-                output: "aborted".to_string(),
+                output: Self::abort_message(call, secs),
             },
             ToolPayload::Mcp { .. } => ResponseInputItem::McpToolCallOutput {
                 call_id: call.call_id.clone(),
-                result: Err("aborted".to_string()),
+                result: Err(Self::abort_message(call, secs)),
             },
             _ => ResponseInputItem::FunctionCallOutput {
                 call_id: call.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: "aborted".to_string(),
+                    content: Self::abort_message(call, secs),
                     ..Default::default()
                 },
             },
+        }
+    }
+
+    fn abort_message(call: &ToolCall, secs: f32) -> String {
+        match call.tool_name.as_str() {
+            "shell" | "container.exec" | "local_shell" | "shell_command" | "unified_exec" => {
+                format!("Wall time: {secs:.1} seconds\naborted by user")
+            }
+            _ => format!("aborted by user after {secs:.1}s"),
         }
     }
 }

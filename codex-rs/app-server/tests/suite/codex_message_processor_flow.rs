@@ -1,8 +1,9 @@
 use anyhow::Result;
 use app_test_support::McpProcess;
 use app_test_support::create_final_assistant_message_sse_response;
-use app_test_support::create_mock_chat_completions_server;
-use app_test_support::create_shell_sse_response;
+use app_test_support::create_mock_responses_server_sequence;
+use app_test_support::create_shell_command_sse_response;
+use app_test_support::format_with_current_shell;
 use app_test_support::to_response;
 use codex_app_server_protocol::AddConversationListenerParams;
 use codex_app_server_protocol::AddConversationSubscriptionResponse;
@@ -22,10 +23,10 @@ use codex_app_server_protocol::SendUserTurnResponse;
 use codex_app_server_protocol::ServerRequest;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
-use codex_core::protocol_config_types::ReasoningEffort;
 use codex_core::protocol_config_types::ReasoningSummary;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use codex_protocol::config_types::SandboxMode;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -56,7 +57,7 @@ async fn test_codex_jsonrpc_conversation_flow() -> Result<()> {
     // Create a mock model server that immediately ends each turn.
     // Two turns are expected: initial session configure + one user message.
     let responses = vec![
-        create_shell_sse_response(
+        create_shell_command_sse_response(
             vec!["ls".to_string()],
             Some(&working_directory),
             Some(5000),
@@ -64,7 +65,7 @@ async fn test_codex_jsonrpc_conversation_flow() -> Result<()> {
         )?,
         create_final_assistant_message_sse_response("Enjoy your new git repo!")?,
     ];
-    let server = create_mock_chat_completions_server(responses).await;
+    let server = create_mock_responses_server_sequence(responses).await;
     create_config_toml(&codex_home, &server.uri())?;
 
     // Start MCP server and initialize.
@@ -144,9 +145,7 @@ async fn test_codex_jsonrpc_conversation_flow() -> Result<()> {
 
     // 4) removeConversationListener
     let remove_listener_id = mcp
-        .send_remove_conversation_listener_request(RemoveConversationListenerParams {
-            subscription_id,
-        })
+        .send_remove_thread_listener_request(RemoveConversationListenerParams { subscription_id })
         .await?;
     let remove_listener_resp: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -175,7 +174,7 @@ async fn test_send_user_turn_changes_approval_policy_behavior() -> Result<()> {
 
     // Mock server will request a python shell call for the first and second turn, then finish.
     let responses = vec![
-        create_shell_sse_response(
+        create_shell_command_sse_response(
             vec![
                 "python3".to_string(),
                 "-c".to_string(),
@@ -186,7 +185,7 @@ async fn test_send_user_turn_changes_approval_policy_behavior() -> Result<()> {
             "call1",
         )?,
         create_final_assistant_message_sse_response("done 1")?,
-        create_shell_sse_response(
+        create_shell_command_sse_response(
             vec![
                 "python3".to_string(),
                 "-c".to_string(),
@@ -198,7 +197,7 @@ async fn test_send_user_turn_changes_approval_policy_behavior() -> Result<()> {
         )?,
         create_final_assistant_message_sse_response("done 2")?,
     ];
-    let server = create_mock_chat_completions_server(responses).await;
+    let server = create_mock_responses_server_sequence(responses).await;
     create_config_toml(&codex_home, &server.uri())?;
 
     // Start MCP server and initialize.
@@ -267,14 +266,9 @@ async fn test_send_user_turn_changes_approval_policy_behavior() -> Result<()> {
         ExecCommandApprovalParams {
             conversation_id,
             call_id: "call1".to_string(),
-            command: vec![
-                "python3".to_string(),
-                "-c".to_string(),
-                "print(42)".to_string(),
-            ],
+            command: format_with_current_shell("python3 -c 'print(42)'"),
             cwd: working_directory.clone(),
             reason: None,
-            risk: None,
             parsed_cmd: vec![ParsedCommand::Unknown {
                 cmd: "python3 -c 'print(42)'".to_string()
             }],
@@ -289,7 +283,7 @@ async fn test_send_user_turn_changes_approval_policy_behavior() -> Result<()> {
     )
     .await?;
 
-    // Wait for first TaskComplete
+    // Wait for first TurnComplete
     let _ = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("codex/event/task_complete"),
@@ -309,6 +303,7 @@ async fn test_send_user_turn_changes_approval_policy_behavior() -> Result<()> {
             model: "mock-model".to_string(),
             effort: Some(ReasoningEffort::Medium),
             summary: ReasoningSummary::Auto,
+            output_schema: None,
         })
         .await?;
     // Acknowledge sendUserTurn
@@ -353,30 +348,22 @@ async fn test_send_user_turn_updates_sandbox_and_cwd_between_turns() -> Result<(
     std::fs::create_dir(&second_cwd)?;
 
     let responses = vec![
-        create_shell_sse_response(
-            vec![
-                "bash".to_string(),
-                "-lc".to_string(),
-                "echo first turn".to_string(),
-            ],
+        create_shell_command_sse_response(
+            vec!["echo".to_string(), "first".to_string(), "turn".to_string()],
             None,
             Some(5000),
             "call-first",
         )?,
         create_final_assistant_message_sse_response("done first")?,
-        create_shell_sse_response(
-            vec![
-                "bash".to_string(),
-                "-lc".to_string(),
-                "echo second turn".to_string(),
-            ],
+        create_shell_command_sse_response(
+            vec!["echo".to_string(), "second".to_string(), "turn".to_string()],
             None,
             Some(5000),
             "call-second",
         )?,
         create_final_assistant_message_sse_response("done second")?,
     ];
-    let server = create_mock_chat_completions_server(responses).await;
+    let server = create_mock_responses_server_sequence(responses).await;
     create_config_toml(&codex_home, &server.uri())?;
 
     let mut mcp = McpProcess::new(&codex_home).await?;
@@ -422,7 +409,7 @@ async fn test_send_user_turn_updates_sandbox_and_cwd_between_turns() -> Result<(
             cwd: first_cwd.clone(),
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::WorkspaceWrite {
-                writable_roots: vec![first_cwd.clone()],
+                writable_roots: vec![first_cwd.try_into()?],
                 network_access: false,
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
@@ -430,6 +417,7 @@ async fn test_send_user_turn_updates_sandbox_and_cwd_between_turns() -> Result<(
             model: model.clone(),
             effort: Some(ReasoningEffort::Medium),
             summary: ReasoningSummary::Auto,
+            output_schema: None,
         })
         .await?;
     timeout(
@@ -442,6 +430,7 @@ async fn test_send_user_turn_updates_sandbox_and_cwd_between_turns() -> Result<(
         mcp.read_stream_until_notification_message("codex/event/task_complete"),
     )
     .await??;
+    mcp.clear_message_buffer();
 
     let second_turn_id = mcp
         .send_send_user_turn_request(SendUserTurnParams {
@@ -455,6 +444,7 @@ async fn test_send_user_turn_updates_sandbox_and_cwd_between_turns() -> Result<(
             model: model.clone(),
             effort: Some(ReasoningEffort::Medium),
             summary: ReasoningSummary::Auto,
+            output_schema: None,
         })
         .await?;
     timeout(
@@ -481,13 +471,9 @@ async fn test_send_user_turn_updates_sandbox_and_cwd_between_turns() -> Result<(
         exec_begin.cwd, second_cwd,
         "exec turn should run from updated cwd"
     );
+    let expected_command = format_with_current_shell("echo second turn");
     assert_eq!(
-        exec_begin.command,
-        vec![
-            "bash".to_string(),
-            "-lc".to_string(),
-            "echo second turn".to_string()
-        ],
+        exec_begin.command, expected_command,
         "exec turn should run expected command"
     );
 
@@ -514,7 +500,7 @@ model_provider = "mock_provider"
 [model_providers.mock_provider]
 name = "Mock provider for test"
 base_url = "{server_uri}/v1"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
 "#

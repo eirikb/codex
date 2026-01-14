@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::path::PathBuf;
 
 use codex_core::error::CodexErr;
 use codex_core::error::Result;
 use codex_core::error::SandboxErr;
 use codex_core::protocol::SandboxPolicy;
+use codex_utils_absolute_path::AbsolutePathBuf;
+
+use crate::mounts::apply_read_only_mounts;
 
 use landlock::ABI;
 use landlock::Access;
@@ -31,6 +33,10 @@ pub(crate) fn apply_sandbox_policy_to_current_thread(
     sandbox_policy: &SandboxPolicy,
     cwd: &Path,
 ) -> Result<()> {
+    if !sandbox_policy.has_full_disk_write_access() {
+        apply_read_only_mounts(sandbox_policy, cwd)?;
+    }
+
     if !sandbox_policy.has_full_network_access() {
         install_network_seccomp_filter_on_current_thread()?;
     }
@@ -56,7 +62,9 @@ pub(crate) fn apply_sandbox_policy_to_current_thread(
 ///
 /// # Errors
 /// Returns [`CodexErr::Sandbox`] variants when the ruleset fails to apply.
-fn install_filesystem_landlock_rules_on_current_thread(writable_roots: Vec<PathBuf>) -> Result<()> {
+fn install_filesystem_landlock_rules_on_current_thread(
+    writable_roots: Vec<AbsolutePathBuf>,
+) -> Result<()> {
     let abi = ABI::V5;
     let access_rw = AccessFs::from_all(abi);
     let access_ro = AccessFs::from_read(abi);
@@ -102,12 +110,10 @@ fn install_network_seccomp_filter_on_current_thread() -> std::result::Result<(),
     deny_syscall(libc::SYS_getsockname);
     deny_syscall(libc::SYS_shutdown);
     deny_syscall(libc::SYS_sendto);
-    deny_syscall(libc::SYS_sendmsg);
     deny_syscall(libc::SYS_sendmmsg);
     // NOTE: allowing recvfrom allows some tools like: `cargo clippy` to run
     // with their socketpair + child processes for sub-proc management
     // deny_syscall(libc::SYS_recvfrom);
-    deny_syscall(libc::SYS_recvmsg);
     deny_syscall(libc::SYS_recvmmsg);
     deny_syscall(libc::SYS_getsockopt);
     deny_syscall(libc::SYS_setsockopt);

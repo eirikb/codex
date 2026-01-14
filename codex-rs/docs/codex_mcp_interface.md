@@ -21,7 +21,8 @@ At a glance:
   - `getUserSavedConfig`, `setDefaultModel`, `getUserAgent`, `userInfo`
   - `model/list` → enumerate available models and reasoning options
 - Auth
-  - `loginApiKey`, `loginChatGpt`, `cancelLoginChatGpt`, `logoutChatGpt`, `getAuthStatus`
+  - `account/read`, `account/login/start`, `account/login/cancel`, `account/logout`, `account/rateLimits/read`
+  - notifications: `account/login/completed`, `account/updated`, `account/rateLimits/updated`
 - Utilities
   - `gitDiffToRemote`, `execOneOffCommand`
 - Approvals (server → client requests)
@@ -54,11 +55,11 @@ Start a new session with optional overrides:
 
 Request `newConversation` params (subset):
 
-- `model`: string model id (e.g. "o3", "gpt-5", "gpt-5-codex")
+- `model`: string model id (e.g. "o3", "gpt-5.1", "gpt-5.1-codex")
 - `profile`: optional named profile
 - `cwd`: optional working directory
 - `approvalPolicy`: `untrusted` | `on-request` | `on-failure` | `never`
-- `sandbox`: `read-only` | `workspace-write` | `danger-full-access`
+- `sandbox`: `read-only` | `workspace-write` | `external-sandbox` (honors `networkAccess` restricted/enabled) | `danger-full-access`
 - `config`: map of additional config overrides
 - `baseInstructions`: optional instruction override
 - `compactPrompt`: optional replacement for the default compaction prompt
@@ -69,7 +70,9 @@ Response: `{ conversationId, model, reasoningEffort?, rolloutPath }`
 Send input to the active turn:
 
 - `sendUserMessage` → enqueue items to the conversation
-- `sendUserTurn` → structured turn with explicit `cwd`, `approvalPolicy`, `sandboxPolicy`, `model`, optional `effort`, and `summary`
+- `sendUserTurn` → structured turn with explicit `cwd`, `approvalPolicy`, `sandboxPolicy`, `model`, optional `effort`, `summary`, and optional `outputSchema` (JSON Schema for the final assistant message)
+
+For v2 threads, `turn/start` also accepts `outputSchema` to constrain the final assistant message for that turn.
 
 Interrupt a running turn: `interruptConversation`.
 
@@ -113,22 +116,18 @@ The client must reply with `{ decision: "allow" | "deny" }` for each request.
 
 ## Auth helpers
 
-For ChatGPT or API‑key based auth flows, the server exposes helpers:
-
-- `loginApiKey { apiKey }`
-- `loginChatGpt` → returns `{ loginId, authUrl }`; browser completes flow; then `loginChatGptComplete` notification follows
-- `cancelLoginChatGpt { loginId }`, `logoutChatGpt`, `getAuthStatus { includeToken?, refreshToken? }`
+For the complete request/response shapes and flow examples, see the [“Auth endpoints (v2)” section in the app‑server README](../app-server/README.md#auth-endpoints-v2).
 
 ## Example: start and send a message
 
 ```json
-{ "jsonrpc": "2.0", "id": 1, "method": "newConversation", "params": { "model": "gpt-5", "approvalPolicy": "on-request" } }
+{ "jsonrpc": "2.0", "id": 1, "method": "newConversation", "params": { "model": "gpt-5.1", "approvalPolicy": "on-request" } }
 ```
 
 Server responds:
 
 ```json
-{ "jsonrpc": "2.0", "id": 1, "result": { "conversationId": "c7b0…", "model": "gpt-5", "rolloutPath": "/path/to/rollout.jsonl" } }
+{ "jsonrpc": "2.0", "id": 1, "result": { "conversationId": "c7b0…", "model": "gpt-5.1", "rolloutPath": "/path/to/rollout.jsonl" } }
 ```
 
 Then send input:
