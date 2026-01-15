@@ -547,6 +547,20 @@ pub struct Tui {
     /// scrollback in terminal multiplexers like Zellij that follow the xterm spec.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
+
+    /// Hide the startup tips showing command examples.
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub hide_startup_tips: Option<bool>,
+
+    /// Hide the session header showing version, model, and directory info.
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub hide_session_header: Option<bool>,
+
+    /// Custom placeholder text for the input area.
+    #[serde(default)]
+    pub input_placeholder: Option<String>,
 }
 
 const fn default_true() -> bool {

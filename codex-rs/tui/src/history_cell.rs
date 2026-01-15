@@ -823,50 +823,59 @@ pub(crate) fn new_session_info(
         reasoning_effort,
         ..
     } = event;
+
+    let mut parts: Vec<Box<dyn HistoryCell>> = Vec::new();
+
     // Header box rendered as history (so it appears at the very top)
-    let header = SessionHeaderHistoryCell::new(
-        model.clone(),
-        reasoning_effort,
-        config.cwd.clone(),
-        CODEX_CLI_VERSION,
-    );
-    let mut parts: Vec<Box<dyn HistoryCell>> = vec![Box::new(header)];
+    let hide_header = config.tui_hide_session_header.unwrap_or(false);
+    if !hide_header {
+        let header = SessionHeaderHistoryCell::new(
+            model.clone(),
+            reasoning_effort,
+            config.cwd.clone(),
+            CODEX_CLI_VERSION,
+        );
+        parts.push(Box::new(header));
+    }
 
     if is_first_event {
         // Help lines below the header (new copy and list)
-        let help_lines: Vec<Line<'static>> = vec![
-            "  To get started, describe a task or try one of these commands:"
-                .dim()
-                .into(),
-            Line::from(""),
-            Line::from(vec![
-                "  ".into(),
-                "/init".into(),
-                " - create an AGENTS.md file with instructions for Codex".dim(),
-            ]),
-            Line::from(vec![
-                "  ".into(),
-                "/status".into(),
-                " - show current session configuration".dim(),
-            ]),
-            Line::from(vec![
-                "  ".into(),
-                "/approvals".into(),
-                " - choose what Codex can do without approval".dim(),
-            ]),
-            Line::from(vec![
-                "  ".into(),
-                "/model".into(),
-                " - choose what model and reasoning effort to use".dim(),
-            ]),
-            Line::from(vec![
-                "  ".into(),
-                "/review".into(),
-                " - review any changes and find issues".dim(),
-            ]),
-        ];
+        let hide_tips = config.tui_hide_startup_tips.unwrap_or(false);
+        if !hide_tips {
+            let help_lines: Vec<Line<'static>> = vec![
+                "  To get started, describe a task or try one of these commands:"
+                    .dim()
+                    .into(),
+                Line::from(""),
+                Line::from(vec![
+                    "  ".into(),
+                    "/init".into(),
+                    " - create an AGENTS.md file with instructions for Codex".dim(),
+                ]),
+                Line::from(vec![
+                    "  ".into(),
+                    "/status".into(),
+                    " - show current session configuration".dim(),
+                ]),
+                Line::from(vec![
+                    "  ".into(),
+                    "/approvals".into(),
+                    " - choose what Codex can do without approval".dim(),
+                ]),
+                Line::from(vec![
+                    "  ".into(),
+                    "/model".into(),
+                    " - choose what model and reasoning effort to use".dim(),
+                ]),
+                Line::from(vec![
+                    "  ".into(),
+                    "/review".into(),
+                    " - review any changes and find issues".dim(),
+                ]),
+            ];
 
-        parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
+            parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
+        }
     } else {
         if config.show_tooltips
             && let Some(tooltips) = tooltips::random_tooltip().map(TooltipHistoryCell::new)

@@ -249,6 +249,15 @@ pub struct Config {
     /// - `never`: Never use alternate screen (inline mode, preserves scrollback).
     pub tui_alternate_screen: AltScreenMode,
 
+    /// Hide the startup tips showing command examples.
+    pub tui_hide_startup_tips: Option<bool>,
+
+    /// Hide the session header showing version, model, and directory info.
+    pub tui_hide_session_header: Option<bool>,
+
+    /// Custom placeholder text for the input area.
+    pub tui_input_placeholder: Option<String>,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -1555,6 +1564,9 @@ impl Config {
                 .as_ref()
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
+            tui_hide_startup_tips: cfg.tui.as_ref().and_then(|t| t.hide_startup_tips),
+            tui_hide_session_header: cfg.tui.as_ref().and_then(|t| t.hide_session_header),
+            tui_input_placeholder: cfg.tui.as_ref().and_then(|t| t.input_placeholder.clone()),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -1785,6 +1797,9 @@ persistence = "none"
                 scroll_wheel_like_max_duration_ms: None,
                 scroll_invert: false,
                 alternate_screen: AltScreenMode::Auto,
+                hide_startup_tips: None,
+                hide_session_header: None,
+                input_placeholder: None,
             }
         );
     }
@@ -3538,6 +3553,9 @@ model_verbosity = "high"
                 tui_scroll_wheel_like_max_duration_ms: None,
                 tui_scroll_invert: false,
                 tui_alternate_screen: AltScreenMode::Auto,
+                tui_hide_startup_tips: None,
+                tui_hide_session_header: None,
+                tui_input_placeholder: None,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -3625,6 +3643,9 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             tui_alternate_screen: AltScreenMode::Auto,
+            tui_hide_startup_tips: None,
+            tui_hide_session_header: None,
+            tui_input_placeholder: None,
             otel: OtelConfig::default(),
         };
 
@@ -3727,6 +3748,9 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             tui_alternate_screen: AltScreenMode::Auto,
+            tui_hide_startup_tips: None,
+            tui_hide_session_header: None,
+            tui_input_placeholder: None,
             otel: OtelConfig::default(),
         };
 
@@ -3815,6 +3839,9 @@ model_verbosity = "high"
             tui_scroll_wheel_like_max_duration_ms: None,
             tui_scroll_invert: false,
             tui_alternate_screen: AltScreenMode::Auto,
+            tui_hide_startup_tips: None,
+            tui_hide_session_header: None,
+            tui_input_placeholder: None,
             otel: OtelConfig::default(),
         };
 

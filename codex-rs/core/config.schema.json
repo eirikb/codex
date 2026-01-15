@@ -75,6 +75,9 @@
         "apply_patch_freeform": {
           "type": "boolean"
         },
+        "child_agents_md": {
+          "type": "boolean"
+        },
         "collab": {
           "type": "boolean"
         },
@@ -97,9 +100,6 @@
           "type": "boolean"
         },
         "experimental_windows_sandbox": {
-          "type": "boolean"
-        },
-        "child_agents_md": {
           "type": "boolean"
         },
         "include_apply_patch_tool": {
@@ -356,12 +356,12 @@
     },
     "shell_environment_policy": {
       "default": {
-        "exclude": null,
-        "experimental_use_profile": null,
-        "ignore_default_excludes": null,
-        "include_only": null,
         "inherit": null,
-        "set": null
+        "ignore_default_excludes": null,
+        "exclude": null,
+        "set": null,
+        "include_only": null,
+        "experimental_use_profile": null
       },
       "allOf": [
         {
@@ -535,6 +535,9 @@
             "apply_patch_freeform": {
               "type": "boolean"
             },
+            "child_agents_md": {
+              "type": "boolean"
+            },
             "collab": {
               "type": "boolean"
             },
@@ -557,9 +560,6 @@
               "type": "boolean"
             },
             "experimental_windows_sandbox": {
-              "type": "boolean"
-            },
-            "child_agents_md": {
               "type": "boolean"
             },
             "include_apply_patch_tool": {
@@ -1317,6 +1317,21 @@
           "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
           "default": true,
           "type": "boolean"
+        },
+        "hide_session_header": {
+          "description": "Hide the session header showing version, model, and directory info. Defaults to `false`.",
+          "default": null,
+          "type": "boolean"
+        },
+        "hide_startup_tips": {
+          "description": "Hide the startup tips showing command examples. Defaults to `false`.",
+          "default": null,
+          "type": "boolean"
+        },
+        "input_placeholder": {
+          "description": "Custom placeholder text for the input area.",
+          "default": null,
+          "type": "string"
         },
         "notifications": {
           "description": "Enable desktop notifications from the TUI when the terminal is unfocused. Defaults to `true`.",

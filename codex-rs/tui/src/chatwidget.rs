@@ -1602,8 +1602,7 @@ impl ChatWidget {
         let mut config = config;
         let model = model.filter(|m| !m.trim().is_empty());
         config.model = model.clone();
-        let mut rng = rand::rng();
-        let placeholder = PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string();
+        let placeholder = get_placeholder_text(&config);
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), thread_manager);
 
         let model_for_header = config
@@ -1705,8 +1704,7 @@ impl ChatWidget {
             ..
         } = common;
         let model = model.filter(|m| !m.trim().is_empty());
-        let mut rng = rand::rng();
-        let placeholder = PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string();
+        let placeholder = get_placeholder_text(&config);
 
         let header_model = model.unwrap_or_else(|| session_configured.model.clone());
 
@@ -4476,6 +4474,15 @@ const PLACEHOLDERS: [&str; 8] = [
     "Run /review on my current changes",
     "Use /skills to list available skills",
 ];
+
+fn get_placeholder_text(config: &Config) -> String {
+    if let Some(custom_placeholder) = &config.tui_input_placeholder {
+        custom_placeholder.clone()
+    } else {
+        let mut rng = rand::rng();
+        PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string()
+    }
+}
 
 // Extract the first bold (Markdown) element in the form **...** from `s`.
 // Returns the inner text if found; otherwise `None`.
