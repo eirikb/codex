@@ -12,6 +12,8 @@ use crate::config::types::SandboxWorkspaceWrite;
 use crate::config::types::ScrollInputMode;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
+use crate::config::types::StartupTask;
+use crate::config::types::StartupTaskToml;
 use crate::config::types::Tui;
 use crate::config::types::UriBasedFileOpener;
 use crate::config_loader::ConfigLayerStack;
@@ -389,6 +391,10 @@ pub struct Config {
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: crate::config::types::OtelConfig,
+
+    /// Background tasks to run automatically when a session starts.
+    /// Requires the `unified_exec` feature to be enabled.
+    pub startup_tasks: Vec<StartupTask>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -956,6 +962,11 @@ pub struct ConfigToml {
     pub experimental_use_freeform_apply_patch: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio", "ollama", or "ollama-chat".
     pub oss_provider: Option<String>,
+
+    /// Background tasks to run automatically when a session starts.
+    /// Requires the `unified_exec` feature to be enabled.
+    #[serde(default)]
+    pub startup_tasks: Vec<StartupTaskToml>,
 }
 
 impl From<ConfigToml> for UserSavedConfig {
@@ -1583,6 +1594,12 @@ impl Config {
                     metrics_exporter: OtelExporterKind::Statsig,
                 }
             },
+            startup_tasks: cfg
+                .startup_tasks
+                .into_iter()
+                .filter(|t| t.enabled)
+                .map(StartupTask::from)
+                .collect(),
         };
         Ok(config)
     }
@@ -3557,6 +3574,7 @@ model_verbosity = "high"
                 tui_hide_session_header: None,
                 tui_input_placeholder: None,
                 otel: OtelConfig::default(),
+                startup_tasks: Vec::new(),
             },
             o3_profile_config
         );
@@ -3647,6 +3665,7 @@ model_verbosity = "high"
             tui_hide_session_header: None,
             tui_input_placeholder: None,
             otel: OtelConfig::default(),
+            startup_tasks: Vec::new(),
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -3752,6 +3771,7 @@ model_verbosity = "high"
             tui_hide_session_header: None,
             tui_input_placeholder: None,
             otel: OtelConfig::default(),
+            startup_tasks: Vec::new(),
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
@@ -3843,6 +3863,7 @@ model_verbosity = "high"
             tui_hide_session_header: None,
             tui_input_placeholder: None,
             otel: OtelConfig::default(),
+            startup_tasks: Vec::new(),
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);

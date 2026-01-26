@@ -22,6 +22,7 @@ use crate::features::Feature;
 use crate::features::Features;
 use crate::models_manager::manager::ModelsManager;
 use crate::parse_command::parse_command;
+use crate::sandboxing::SandboxPermissions;
 use crate::parse_turn_item;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
@@ -88,6 +89,7 @@ use crate::config::ConstraintResult;
 use crate::config::GhostSnapshotConfig;
 use crate::config::types::McpServerConfig;
 use crate::config::types::ShellEnvironmentPolicy;
+use crate::config::types::StartupTask;
 use crate::context_manager::ContextManager;
 use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
@@ -151,6 +153,8 @@ use crate::tools::sandboxing::ApprovalStore;
 use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::ToolsConfigParams;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use crate::unified_exec::ExecCommandRequest;
+use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::user_instructions::UserInstructions;
 use crate::user_notification::UserNotification;
@@ -784,6 +788,9 @@ impl Session {
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
 
+        // Execute any configured startup background tasks
+        sess.execute_startup_tasks(&config.startup_tasks).await;
+
         Ok(sess)
     }
 
@@ -893,6 +900,97 @@ impl Session {
             RolloutItem::EventMsg(EventMsg::TokenCount(ev)) => ev.info.clone(),
             _ => None,
         })
+    }
+
+    /// Execute startup background tasks if unified_exec feature is enabled.
+    ///
+    /// These tasks are spawned in the background and run independently of the
+    /// main session flow. They're useful for starting development servers,
+    /// file watchers, or other long-running processes.
+    async fn execute_startup_tasks(self: &Arc<Self>, startup_tasks: &[StartupTask]) {
+        if startup_tasks.is_empty() {
+            return;
+        }
+
+        if !self.features.enabled(Feature::UnifiedExec) {
+            warn!(
+                "Startup tasks configured but unified_exec feature is not enabled. \
+                 Enable it with `[features].unified_exec = true` in config.toml"
+            );
+            return;
+        }
+
+        let turn_context = self.new_default_turn().await;
+
+        for task in startup_tasks {
+            let task_name = task.name.as_deref().unwrap_or(&task.command);
+            info!("Starting startup task: {}", task_name);
+
+            // Split the command string into tokens using shlex
+            let command = match shlex::split(&task.command) {
+                Some(tokens) if !tokens.is_empty() => tokens,
+                _ => {
+                    error!(
+                        "Failed to parse startup task command '{}': invalid shell syntax",
+                        task.command
+                    );
+                    if !task.continue_on_error {
+                        warn!("Aborting startup tasks due to parse error");
+                        return;
+                    }
+                    continue;
+                }
+            };
+
+            // Allocate a process ID for this task
+            let process_id = self
+                .services
+                .unified_exec_manager
+                .allocate_process_id()
+                .await;
+
+            // Build the working directory - use task's cwd if specified, otherwise session cwd
+            let workdir = task.cwd.clone().or_else(|| Some(turn_context.cwd.clone()));
+
+            let request = ExecCommandRequest {
+                command,
+                process_id: process_id.clone(),
+                yield_time_ms: task.timeout_ms.unwrap_or(5000),
+                max_output_tokens: Some(1000), // Just capture initial output
+                workdir,
+                tty: false,
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                justification: Some(format!("Startup task: {}", task_name)),
+            };
+
+            let context = UnifiedExecContext::new(
+                Arc::clone(self),
+                Arc::clone(&turn_context),
+                format!("startup-task-{}", process_id),
+            );
+
+            match self
+                .services
+                .unified_exec_manager
+                .exec_command(request, &context)
+                .await
+            {
+                Ok(response) => {
+                    info!(
+                        "Startup task '{}' started (process_id: {})",
+                        task_name,
+                        response.process_id.as_deref().unwrap_or("unknown")
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to start startup task '{}': {}", task_name, e);
+                    if !task.continue_on_error {
+                        warn!("Aborting remaining startup tasks");
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) async fn update_settings(

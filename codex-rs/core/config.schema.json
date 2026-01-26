@@ -373,6 +373,14 @@
       "description": "When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output. Defaults to `false`.",
       "type": "boolean"
     },
+    "startup_tasks": {
+      "description": "Background tasks to run automatically when a session starts. Requires the `unified_exec` feature to be enabled.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/StartupTaskToml"
+      }
+    },
     "tool_output_token_limit": {
       "description": "Token budget applied when storing tool/function outputs in the context manager.",
       "type": "integer",
@@ -1273,6 +1281,47 @@
           "additionalProperties": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "StartupTaskToml": {
+      "description": "Configuration for a startup background task.\n\nStartup tasks are background terminal commands that run automatically when a Codex session begins. They require the `unified_exec` feature to be enabled.",
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "description": "The shell command to execute.",
+          "type": "string"
+        },
+        "continue_on_error": {
+          "description": "If `true`, session initialization continues even if this task fails. Defaults to `true`.",
+          "default": true,
+          "type": "boolean"
+        },
+        "cwd": {
+          "description": "Working directory for the command. Defaults to the session cwd.",
+          "default": null,
+          "type": "string"
+        },
+        "enabled": {
+          "description": "When `false`, this task is skipped. Defaults to `true`.",
+          "default": true,
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Optional human-readable name for the task.",
+          "default": null,
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Maximum time in milliseconds to wait for initial output before yielding control back to the session. Defaults to 5000ms.",
+          "default": null,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
         }
       },
       "additionalProperties": false

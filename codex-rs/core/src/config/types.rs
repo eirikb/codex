@@ -728,6 +728,75 @@ impl Default for ShellEnvironmentPolicy {
     }
 }
 
+/// Configuration for a startup background task.
+///
+/// Startup tasks are background terminal commands that run automatically
+/// when a Codex session begins. They require the `unified_exec` feature
+/// to be enabled.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct StartupTaskToml {
+    /// Optional human-readable name for the task.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// The shell command to execute.
+    pub command: String,
+
+    /// Working directory for the command. Defaults to the session cwd.
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+
+    /// When `false`, this task is skipped. Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Maximum time in milliseconds to wait for initial output before
+    /// yielding control back to the session. Defaults to 5000ms.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+
+    /// If `true`, session initialization continues even if this task fails.
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub continue_on_error: bool,
+}
+
+/// Processed startup task configuration ready for execution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartupTask {
+    /// Optional human-readable name for the task.
+    pub name: Option<String>,
+
+    /// The shell command to execute.
+    pub command: String,
+
+    /// Working directory for the command.
+    pub cwd: Option<PathBuf>,
+
+    /// Whether this task is enabled.
+    pub enabled: bool,
+
+    /// Maximum time in milliseconds to wait for initial output.
+    pub timeout_ms: Option<u64>,
+
+    /// Whether to continue if this task fails.
+    pub continue_on_error: bool,
+}
+
+impl From<StartupTaskToml> for StartupTask {
+    fn from(toml: StartupTaskToml) -> Self {
+        Self {
+            name: toml.name,
+            command: toml.command,
+            cwd: toml.cwd,
+            enabled: toml.enabled,
+            timeout_ms: toml.timeout_ms,
+            continue_on_error: toml.continue_on_error,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
