@@ -225,6 +225,12 @@ pub async fn run_main(
 
     let additional_dirs = cli.add_dir.clone();
 
+    if !cli.startup_tasks.is_empty() {
+        cli.config_overrides
+            .raw_overrides
+            .push("features.unified_exec=true".to_string());
+    }
+
     let overrides = ConfigOverrides {
         model,
         review_model: None,
@@ -241,6 +247,7 @@ pub async fn run_main(
         show_raw_agent_reasoning: cli.oss.then_some(true),
         tools_web_search_request: None,
         additional_writable_roots: additional_dirs,
+        startup_tasks: cli.startup_tasks.clone(),
     };
 
     let config = load_config_or_exit(cli_kv_overrides.clone(), overrides.clone()).await;

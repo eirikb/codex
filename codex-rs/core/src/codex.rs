@@ -381,7 +381,7 @@ pub(crate) struct Session {
 }
 
 /// The context needed for a single turn of the thread.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct TurnContext {
     pub(crate) sub_id: String,
     pub(crate) client: ModelClient,
@@ -915,32 +915,25 @@ impl Session {
         if !self.features.enabled(Feature::UnifiedExec) {
             warn!(
                 "Startup tasks configured but unified_exec feature is not enabled. \
-                 Enable it with `[features].unified_exec = true` in config.toml"
+                 Enable it with `[features].unified_exec = true` in config.toml or --enable unified_exec"
             );
             return;
         }
 
-        let turn_context = self.new_default_turn().await;
+        let mut turn_context = (*self.new_default_turn().await).clone();
+        turn_context.approval_policy = AskForApproval::Never;
+        let turn_context = Arc::new(turn_context);
 
         for task in startup_tasks {
             let task_name = task.name.as_deref().unwrap_or(&task.command);
             info!("Starting startup task: {}", task_name);
 
-            // Split the command string into tokens using shlex
-            let command = match shlex::split(&task.command) {
-                Some(tokens) if !tokens.is_empty() => tokens,
-                _ => {
-                    error!(
-                        "Failed to parse startup task command '{}': invalid shell syntax",
-                        task.command
-                    );
-                    if !task.continue_on_error {
-                        warn!("Aborting startup tasks due to parse error");
-                        return;
-                    }
-                    continue;
-                }
-            };
+            // Wrap the command in a shell so that shell syntax (&&, |, etc.) works
+            let command = vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                task.command.clone(),
+            ];
 
             // Allocate a process ID for this task
             let process_id = self
@@ -959,7 +952,8 @@ impl Session {
                 max_output_tokens: Some(1000), // Just capture initial output
                 workdir,
                 tty: false,
-                sandbox_permissions: SandboxPermissions::UseDefault,
+                // Err... hack? Need this for npm run dev :D
+                sandbox_permissions: SandboxPermissions::RequireEscalated,
                 justification: Some(format!("Startup task: {}", task_name)),
             };
 
@@ -985,7 +979,6 @@ impl Session {
                 Err(e) => {
                     error!("Failed to start startup task '{}': {}", task_name, e);
                     if !task.continue_on_error {
-                        warn!("Aborting remaining startup tasks");
                         return;
                     }
                 }

@@ -1168,6 +1168,8 @@ pub struct ConfigOverrides {
     pub tools_web_search_request: Option<bool>,
     /// Additional directories that should be treated as writable roots for this session.
     pub additional_writable_roots: Vec<PathBuf>,
+    /// Startup tasks from CLI (command strings that will be run in the background on session start).
+    pub startup_tasks: Vec<String>,
 }
 
 /// Resolves the OSS provider from CLI override, profile config, or global config.
@@ -1236,6 +1238,7 @@ impl Config {
             show_raw_agent_reasoning,
             tools_web_search_request: override_tools_web_search_request,
             additional_writable_roots,
+            startup_tasks: cli_startup_tasks,
         } = overrides;
 
         let active_profile_name = config_profile_key
@@ -1594,12 +1597,25 @@ impl Config {
                     metrics_exporter: OtelExporterKind::Statsig,
                 }
             },
-            startup_tasks: cfg
-                .startup_tasks
-                .into_iter()
-                .filter(|t| t.enabled)
-                .map(StartupTask::from)
-                .collect(),
+            startup_tasks: {
+                let mut tasks: Vec<StartupTask> = cfg
+                    .startup_tasks
+                    .into_iter()
+                    .filter(|t| t.enabled)
+                    .map(StartupTask::from)
+                    .collect();
+                for cmd in cli_startup_tasks {
+                    tasks.push(StartupTask {
+                        name: None,
+                        command: cmd,
+                        cwd: None,
+                        enabled: true,
+                        timeout_ms: None,
+                        continue_on_error: true,
+                    });
+                }
+                tasks
+            },
         };
         Ok(config)
     }

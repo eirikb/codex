@@ -110,6 +110,12 @@ pub struct Cli {
     #[arg(long = "no-alt-screen", default_value_t = false)]
     pub no_alt_screen: bool,
 
+    /// Run a command in the background when the session starts.
+    /// Automatically enables the unified_exec (background terminal) feature.
+    /// Can be specified multiple times for multiple tasks.
+    #[arg(long = "startup-task", value_name = "COMMAND", action = clap::ArgAction::Append)]
+    pub startup_tasks: Vec<String>,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 }

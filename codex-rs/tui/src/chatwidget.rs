@@ -1609,7 +1609,9 @@ impl ChatWidget {
             .model
             .clone()
             .unwrap_or_else(|| DEFAULT_MODEL_DISPLAY_NAME.to_string());
-        let active_cell = if model.is_none() {
+        let active_cell = if model.is_none()
+            && !config.tui_hide_session_header.unwrap_or(false)
+        {
             Some(Self::placeholder_session_header_cell(&config))
         } else {
             None

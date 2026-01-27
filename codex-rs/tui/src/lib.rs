@@ -130,6 +130,12 @@ pub async fn run_main(
             .push("features.web_search_request=true".to_string());
     }
 
+    if !cli.startup_tasks.is_empty() {
+        cli.config_overrides
+            .raw_overrides
+            .push("features.unified_exec=true".to_string());
+    }
+
     // When using `--oss`, let the bootstrapper pick the model (defaulting to
     // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
     let raw_overrides = cli.config_overrides.raw_overrides.clone();
@@ -224,6 +230,7 @@ pub async fn run_main(
         codex_linux_sandbox_exe,
         show_raw_agent_reasoning: cli.oss.then_some(true),
         additional_writable_roots: additional_dirs,
+        startup_tasks: cli.startup_tasks.clone(),
         ..Default::default()
     };
 
