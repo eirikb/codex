@@ -883,15 +883,9 @@ impl ChatWidget {
     /// Handle a turn aborted due to user interrupt (Esc).
     /// When there are queued user messages, restore them into the composer
     /// separated by newlines rather than auto‑submitting the next one.
-    fn on_interrupted_turn(&mut self, reason: TurnAbortReason) {
-        // Finalize, log a gentle prompt, and clear running state.
+    fn on_interrupted_turn(&mut self, _reason: TurnAbortReason) {
+        // Finalize and clear running state.
         self.finalize_turn();
-
-        if reason != TurnAbortReason::ReviewEnded {
-            self.add_to_history(history_cell::new_error_event(
-                "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.".to_owned(),
-            ));
-        }
 
         // If any messages were queued during the task, restore them into the composer.
         if !self.queued_user_messages.is_empty() {
@@ -1491,6 +1485,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_steer_enabled(widget.config.features.enabled(Feature::Steer));
+        widget
+            .bottom_pane
+            .set_feedback_enabled(widget.config.feedback_enabled);
 
         widget
     }
@@ -1586,6 +1583,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_steer_enabled(widget.config.features.enabled(Feature::Steer));
+        widget
+            .bottom_pane
+            .set_feedback_enabled(widget.config.feedback_enabled);
 
         widget
     }

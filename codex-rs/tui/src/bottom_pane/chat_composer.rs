@@ -197,6 +197,8 @@ pub(crate) struct ChatComposer {
     dismissed_skill_popup_token: Option<String>,
     /// When enabled, `Enter` submits immediately and `Tab` requests queuing behavior.
     steer_enabled: bool,
+    /// When false, hides the /feedback command from the command popup.
+    feedback_enabled: bool,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -249,6 +251,7 @@ impl ChatComposer {
             skills: None,
             dismissed_skill_popup_token: None,
             steer_enabled: false,
+            feedback_enabled: true,
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -1104,6 +1107,10 @@ impl ChatComposer {
 
     pub fn skills(&self) -> Option<&Vec<SkillMetadata>> {
         self.skills.as_ref()
+    }
+
+    pub fn set_feedback_enabled(&mut self, enabled: bool) {
+        self.feedback_enabled = enabled;
     }
 
     /// Extract a token prefixed with `prefix` under the cursor, if any.
@@ -2007,7 +2014,7 @@ impl ChatComposer {
                 if is_editing_slash_command_name {
                     let skills_enabled = self.skills_enabled();
                     let mut command_popup =
-                        CommandPopup::new(self.custom_prompts.clone(), skills_enabled);
+                        CommandPopup::new(self.custom_prompts.clone(), skills_enabled, self.feedback_enabled);
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                 }
