@@ -32,6 +32,64 @@ use tracing_test::traced_test;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_test::internal::MockWriter;
 
+fn extract_log_field(line: &str, key: &str) -> Option<String> {
+    let quoted_prefix = format!("{key}=\"");
+    if let Some(start) = line.find(&quoted_prefix) {
+        let value_start = start + quoted_prefix.len();
+        if let Some(end_rel) = line[value_start..].find('"') {
+            return Some(line[value_start..value_start + end_rel].to_string());
+        }
+    }
+
+    let bare_prefix = format!("{key}=");
+    for token in line.split_whitespace() {
+        let trimmed = token.trim_end_matches(',');
+        if let Some(value) = trimmed.strip_prefix(&bare_prefix) {
+            return Some(value.to_string());
+        }
+    }
+
+    None
+}
+
+fn assert_empty_mcp_tool_fields(line: &str) -> Result<(), String> {
+    let mcp_server = extract_log_field(line, "mcp_server")
+        .ok_or_else(|| "missing mcp_server field".to_string())?;
+    if !mcp_server.is_empty() {
+        return Err(format!("expected empty mcp_server, got {mcp_server}"));
+    }
+
+    let mcp_server_origin = extract_log_field(line, "mcp_server_origin")
+        .ok_or_else(|| "missing mcp_server_origin field".to_string())?;
+    if !mcp_server_origin.is_empty() {
+        return Err(format!(
+            "expected empty mcp_server_origin, got {mcp_server_origin}"
+        ));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn extract_log_field_handles_empty_bare_values() {
+    let line = "event.name=\"codex.tool_result\" mcp_server= mcp_server_origin=";
+    assert_eq!(extract_log_field(line, "mcp_server"), Some(String::new()));
+    assert_eq!(
+        extract_log_field(line, "mcp_server_origin"),
+        Some(String::new())
+    );
+}
+
+#[test]
+fn extract_log_field_does_not_confuse_similar_keys() {
+    let line = "event.name=\"codex.tool_result\" mcp_server_origin=stdio";
+    assert_eq!(extract_log_field(line, "mcp_server"), None);
+    assert_eq!(
+        extract_log_field(line, "mcp_server_origin"),
+        Some("stdio".to_string())
+    );
+}
+
 #[tokio::test]
 #[traced_test]
 async fn responses_api_emits_api_request_event() {
@@ -45,6 +103,7 @@ async fn responses_api_emits_api_request_event() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -87,6 +146,7 @@ async fn process_sse_emits_tracing_for_output_item() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -116,7 +176,10 @@ async fn process_sse_emits_failed_event_on_parse_error() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -126,6 +189,7 @@ async fn process_sse_emits_failed_event_on_parse_error() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -156,7 +220,10 @@ async fn process_sse_records_failed_event_when_stream_closes_without_completed()
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -166,6 +233,7 @@ async fn process_sse_records_failed_event_when_stream_closes_without_completed()
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -216,7 +284,10 @@ async fn process_sse_failed_event_records_response_error_message() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -226,6 +297,7 @@ async fn process_sse_failed_event_records_response_error_message() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -274,7 +346,10 @@ async fn process_sse_failed_event_logs_parse_error() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -284,6 +359,7 @@ async fn process_sse_failed_event_logs_parse_error() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -319,7 +395,10 @@ async fn process_sse_failed_event_logs_missing_error() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -329,6 +408,7 @@ async fn process_sse_failed_event_logs_missing_error() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -373,7 +453,10 @@ async fn process_sse_failed_event_logs_response_completed_parse_error() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -383,6 +466,7 @@ async fn process_sse_failed_event_logs_response_completed_parse_error() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -434,6 +518,7 @@ async fn process_sse_emits_completed_telemetry() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -492,7 +577,10 @@ async fn handle_responses_span_records_response_kind_and_tool_name() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -502,6 +590,7 @@ async fn handle_responses_span_records_response_kind_and_tool_name() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -557,7 +646,10 @@ async fn record_responses_sets_span_fields_for_response_events() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -567,6 +659,7 @@ async fn record_responses_sets_span_fields_for_response_events() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -637,7 +730,10 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -647,6 +743,7 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -675,6 +772,7 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
         if !line.contains("success=false") {
             return Err("missing success field".to_string());
         }
+        assert_empty_mcp_tool_fields(line)?;
 
         Ok(())
     });
@@ -705,7 +803,10 @@ async fn handle_response_item_records_tool_result_for_function_call() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -715,6 +816,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -743,6 +845,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
         if !line.contains("success=false") {
             return Err("missing success field".to_string());
         }
+        assert_empty_mcp_tool_fields(line)?;
 
         Ok(())
     });
@@ -783,7 +886,10 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -793,6 +899,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -814,6 +921,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
         if !line.contains("success=false") {
             return Err("missing success field".to_string());
         }
+        assert_empty_mcp_tool_fields(line)?;
 
         Ok(())
     });
@@ -845,7 +953,10 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
+            config
+                .features
+                .disable(Feature::GhostCommit)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await
@@ -855,6 +966,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -884,6 +996,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
         if !line.contains("success=false") {
             return Err("missing success field".to_string());
         }
+        assert_empty_mcp_tool_fields(line)?;
 
         Ok(())
     });
@@ -949,8 +1062,9 @@ async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-            config.sandbox_policy = Constrained::allow_any(SandboxPolicy::DangerFullAccess);
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.permissions.sandbox_policy =
+                Constrained::allow_any(SandboxPolicy::DangerFullAccess);
         })
         .build(&server)
         .await
@@ -960,6 +1074,7 @@ async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -999,7 +1114,8 @@ async fn handle_container_exec_user_approved_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
+            config.permissions.approval_policy =
+                Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1009,17 +1125,23 @@ async fn handle_container_exec_user_approved_records_tool_decision() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "approved".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let approval_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+        panic!("expected ExecApprovalRequest event");
+    };
 
     codex
         .submit(Op::ExecApproval {
-            id: "0".into(),
+            id: approval.effective_approval_id(),
+            turn_id: None,
             decision: ReviewDecision::Approved,
         })
         .await
@@ -1058,7 +1180,8 @@ async fn handle_container_exec_user_approved_for_session_records_tool_decision()
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
+            config.permissions.approval_policy =
+                Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1068,17 +1191,23 @@ async fn handle_container_exec_user_approved_for_session_records_tool_decision()
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "persist".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let approval_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+        panic!("expected ExecApprovalRequest event");
+    };
 
     codex
         .submit(Op::ExecApproval {
-            id: "0".into(),
+            id: approval.effective_approval_id(),
+            turn_id: None,
             decision: ReviewDecision::ApprovedForSession,
         })
         .await
@@ -1117,7 +1246,8 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
+            config.permissions.approval_policy =
+                Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1127,17 +1257,23 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "retry".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let approval_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+        panic!("expected ExecApprovalRequest event");
+    };
 
     codex
         .submit(Op::ExecApproval {
-            id: "0".into(),
+            id: approval.effective_approval_id(),
+            turn_id: None,
             decision: ReviewDecision::Approved,
         })
         .await
@@ -1176,7 +1312,8 @@ async fn handle_container_exec_user_denies_records_tool_decision() {
     .await;
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
+            config.permissions.approval_policy =
+                Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1186,17 +1323,23 @@ async fn handle_container_exec_user_denies_records_tool_decision() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "deny".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let approval_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+        panic!("expected ExecApprovalRequest event");
+    };
 
     codex
         .submit(Op::ExecApproval {
-            id: "0".into(),
+            id: approval.effective_approval_id(),
+            turn_id: None,
             decision: ReviewDecision::Denied,
         })
         .await
@@ -1235,7 +1378,8 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
+            config.permissions.approval_policy =
+                Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1245,17 +1389,23 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "persist".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let approval_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+        panic!("expected ExecApprovalRequest event");
+    };
 
     codex
         .submit(Op::ExecApproval {
-            id: "0".into(),
+            id: approval.effective_approval_id(),
+            turn_id: None,
             decision: ReviewDecision::ApprovedForSession,
         })
         .await
@@ -1295,7 +1445,8 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
+            config.permissions.approval_policy =
+                Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1305,17 +1456,23 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "deny".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let approval_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecApprovalRequest(_))).await;
+    let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+        panic!("expected ExecApprovalRequest event");
+    };
 
     codex
         .submit(Op::ExecApproval {
-            id: "0".into(),
+            id: approval.effective_approval_id(),
+            turn_id: None,
             decision: ReviewDecision::Denied,
         })
         .await

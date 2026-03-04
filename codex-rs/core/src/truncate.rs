@@ -34,18 +34,6 @@ impl From<TruncationPolicyConfig> for TruncationPolicy {
 }
 
 impl TruncationPolicy {
-    /// Scale the underlying budget by `multiplier`, rounding up to avoid under-budgeting.
-    pub fn mul(self, multiplier: f64) -> Self {
-        match self {
-            TruncationPolicy::Bytes(bytes) => {
-                TruncationPolicy::Bytes((bytes as f64 * multiplier).ceil() as usize)
-            }
-            TruncationPolicy::Tokens(tokens) => {
-                TruncationPolicy::Tokens((tokens as f64 * multiplier).ceil() as usize)
-            }
-        }
-    }
-
     /// Returns a token budget derived from this policy.
     ///
     /// - For `Tokens`, this is the explicit token limit.
@@ -69,6 +57,21 @@ impl TruncationPolicy {
         match self {
             TruncationPolicy::Bytes(bytes) => *bytes,
             TruncationPolicy::Tokens(tokens) => approx_bytes_for_tokens(*tokens),
+        }
+    }
+}
+
+impl std::ops::Mul<f64> for TruncationPolicy {
+    type Output = Self;
+
+    fn mul(self, multiplier: f64) -> Self::Output {
+        match self {
+            TruncationPolicy::Bytes(bytes) => {
+                TruncationPolicy::Bytes((bytes as f64 * multiplier).ceil() as usize)
+            }
+            TruncationPolicy::Tokens(tokens) => {
+                TruncationPolicy::Tokens((tokens as f64 * multiplier).ceil() as usize)
+            }
         }
     }
 }
@@ -135,9 +138,10 @@ pub(crate) fn truncate_function_output_items_with_policy(
                     remaining_budget = 0;
                 }
             }
-            FunctionCallOutputContentItem::InputImage { image_url } => {
+            FunctionCallOutputContentItem::InputImage { image_url, detail } => {
                 out.push(FunctionCallOutputContentItem::InputImage {
                     image_url: image_url.clone(),
+                    detail: *detail,
                 });
             }
         }
@@ -299,6 +303,14 @@ pub(crate) fn approx_tokens_from_byte_count(bytes: usize) -> u64 {
     let bytes_u64 = bytes as u64;
     bytes_u64.saturating_add((APPROX_BYTES_PER_TOKEN as u64).saturating_sub(1))
         / (APPROX_BYTES_PER_TOKEN as u64)
+}
+
+pub(crate) fn approx_tokens_from_byte_count_i64(bytes: i64) -> i64 {
+    if bytes <= 0 {
+        return 0;
+    }
+    let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+    i64::try_from(approx_tokens_from_byte_count(bytes)).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
@@ -480,6 +492,7 @@ mod tests {
             FunctionCallOutputContentItem::InputText { text: t2.clone() },
             FunctionCallOutputContentItem::InputImage {
                 image_url: "img:mid".to_string(),
+                detail: None,
             },
             FunctionCallOutputContentItem::InputText { text: t3 },
             FunctionCallOutputContentItem::InputText { text: t4 },
@@ -507,7 +520,8 @@ mod tests {
         assert_eq!(
             output[2],
             FunctionCallOutputContentItem::InputImage {
-                image_url: "img:mid".to_string()
+                image_url: "img:mid".to_string(),
+                detail: None,
             }
         );
 

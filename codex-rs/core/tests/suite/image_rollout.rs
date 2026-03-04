@@ -1,13 +1,12 @@
 use anyhow::Context;
-use codex_core::protocol::AskForApproval;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::Op;
-use codex_core::protocol::RolloutItem;
-use codex_core::protocol::RolloutLine;
-use codex_core::protocol::SandboxPolicy;
-use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::ev_assistant_message;
@@ -117,6 +116,7 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
                 },
                 UserInput::Text {
                     text: "pasted image".to_string(),
+                    text_elements: Vec::new(),
                 },
             ],
             final_output_json_schema: None,
@@ -125,7 +125,10 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -133,7 +136,7 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
     codex.submit(Op::Shutdown).await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
 
-    let rollout_path = codex.rollout_path();
+    let rollout_path = codex.rollout_path().expect("rollout path");
     let rollout_text = read_rollout_text(&rollout_path).await?;
     let actual = find_user_message_with_image(&rollout_text)
         .expect("expected user message with input image in rollout");
@@ -154,6 +157,8 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
                 text: "pasted image".to_string(),
             },
         ],
+        end_turn: None,
+        phase: None,
     };
 
     assert_eq!(actual, expected);
@@ -194,6 +199,7 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
                 },
                 UserInput::Text {
                     text: "dropped image".to_string(),
+                    text_elements: Vec::new(),
                 },
             ],
             final_output_json_schema: None,
@@ -202,7 +208,10 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -210,7 +219,7 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
     codex.submit(Op::Shutdown).await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
 
-    let rollout_path = codex.rollout_path();
+    let rollout_path = codex.rollout_path().expect("rollout path");
     let rollout_text = read_rollout_text(&rollout_path).await?;
     let actual = find_user_message_with_image(&rollout_text)
         .expect("expected user message with input image in rollout");
@@ -231,6 +240,8 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
                 text: "dropped image".to_string(),
             },
         ],
+        end_turn: None,
+        phase: None,
     };
 
     assert_eq!(actual, expected);

@@ -6,14 +6,14 @@ use std::sync::OnceLock;
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::features::Feature;
-use codex_core::protocol::AskForApproval;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::ExecCommandSource;
-use codex_core::protocol::Op;
-use codex_core::protocol::SandboxPolicy;
-use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::assert_regex_match;
+use core_test_support::process::process_is_alive;
 use core_test_support::process::wait_for_pid_file;
 use core_test_support::process::wait_for_process_exit;
 use core_test_support::responses::ev_assistant_message;
@@ -164,7 +164,10 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
     let builder = test_codex().with_config(|config| {
         config.include_apply_patch_tool = true;
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let harness = TestCodexHarness::with_builder(builder).await?;
 
@@ -200,6 +203,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "apply patch via unified exec".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd,
@@ -207,7 +211,10 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -290,7 +297,10 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
 
     let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -326,6 +336,7 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "emit begin event".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -333,7 +344,10 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -362,7 +376,10 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
 
     let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -401,6 +418,7 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "run relative workdir test".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -408,7 +426,10 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -440,7 +461,10 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
 
     let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -479,6 +503,7 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "run workdir test".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -486,7 +511,10 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -519,7 +547,10 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -569,6 +600,7 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "emit end event".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -576,7 +608,10 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -606,7 +641,10 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -641,6 +679,7 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "emit delta".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -648,7 +687,10 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -678,7 +720,10 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -714,6 +759,7 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "exercise full unified exec lifecycle".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -721,7 +767,10 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -785,7 +834,10 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -798,6 +850,7 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
     let open_args = json!({
         "cmd": "/bin/bash -i",
         "yield_time_ms": 200,
+        "tty": true,
     });
 
     let stdin_call_id = "uexec-stdin-delta";
@@ -840,6 +893,7 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "stdin delta".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -847,7 +901,10 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -884,7 +941,10 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -897,6 +957,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
     let open_args = json!({
         "cmd": "sleep 3 && echo MARKER1 && sleep 3 && echo MARKER2",
         "yield_time_ms": 10,
+        "tty": true,
     });
 
     // Poll stdin three times: first for no output, second after the first marker,
@@ -973,6 +1034,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "delayed terminal interaction output".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -980,7 +1042,10 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1074,7 +1139,10 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1130,6 +1198,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "check poll event behavior".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1137,7 +1206,10 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1190,7 +1262,10 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1225,6 +1300,7 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "run metadata test".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1232,7 +1308,10 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1305,7 +1384,10 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1340,6 +1422,7 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "check default pipe mode".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1347,7 +1430,10 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1391,7 +1477,10 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1427,6 +1516,7 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "check tty enabled".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1434,7 +1524,10 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1471,7 +1564,10 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1505,6 +1601,7 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "watch early exit timing".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1512,7 +1609,10 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1563,7 +1663,10 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1633,6 +1736,7 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "test write_stdin exit behavior".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1640,7 +1744,10 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1726,7 +1833,10 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1798,6 +1908,7 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "end on exit".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1805,7 +1916,10 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1823,7 +1937,7 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unified_exec_closes_long_running_session_at_turn_end() -> Result<()> {
+async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
@@ -1832,7 +1946,10 @@ async fn unified_exec_closes_long_running_session_at_turn_end() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1871,7 +1988,8 @@ async fn unified_exec_closes_long_running_session_at_turn_end() -> Result<()> {
     codex
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
-                text: "close unified exec processes on turn end".into(),
+                text: "keep unified exec process after turn end".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1879,7 +1997,10 @@ async fn unified_exec_closes_long_running_session_at_turn_end() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -1889,7 +2010,7 @@ async fn unified_exec_closes_long_running_session_at_turn_end() -> Result<()> {
     })
     .await;
 
-    let begin_process_id = begin_event
+    let _begin_process_id = begin_event
         .process_id
         .clone()
         .expect("expected process_id for long-running unified exec process");
@@ -1900,28 +2021,95 @@ async fn unified_exec_closes_long_running_session_at_turn_end() -> Result<()> {
         "expected numeric pid, got {pid:?}"
     );
 
-    let mut end_event = None;
-    let mut task_complete = false;
-    loop {
-        let msg = wait_for_event(&codex, |_| true).await;
-        match msg {
-            EventMsg::ExecCommandEnd(ev) if ev.call_id == call_id => end_event = Some(ev),
-            EventMsg::TurnComplete(_) => task_complete = true,
-            _ => {}
-        }
-        if task_complete && end_event.is_some() {
-            break;
-        }
-    }
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
-    let end_event = end_event.expect("expected ExecCommandEnd event for unified exec session");
-    assert_eq!(end_event.call_id, call_id);
-    let end_process_id = end_event
-        .process_id
-        .clone()
-        .expect("expected process_id in unified exec end event");
-    assert_eq!(end_process_id, begin_process_id);
+    assert!(
+        process_is_alive(&pid)?,
+        "expected unified exec process to remain alive after turn completion"
+    );
 
+    codex.submit(Op::Shutdown).await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
+    wait_for_process_exit(&pid).await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_interrupt_terminates_long_running_session() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_windows!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let TestCodex {
+        codex,
+        cwd,
+        session_configured,
+        ..
+    } = builder.build(&server).await?;
+
+    let temp_dir = tempfile::tempdir()?;
+    let pid_path = temp_dir.path().join("uexec_pid_interrupt");
+    let pid_path_str = pid_path.to_string_lossy();
+
+    let call_id = "uexec-long-running-interrupt";
+    let command = format!("printf '%s' $$ > '{pid_path_str}' && exec sleep 3000");
+    let args = json!({
+        "cmd": command,
+        "yield_time_ms": 30000,
+    });
+
+    let responses = vec![sse(vec![
+        ev_response_created("resp-1"),
+        ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+        ev_completed("resp-1"),
+    ])];
+    mount_sse_sequence(&server, responses).await;
+
+    let session_model = session_configured.model.clone();
+
+    codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "interrupt long-running unified exec".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: cwd.path().to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            model: session_model,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let _begin_event = wait_for_event_match(&codex, |msg| match msg {
+        EventMsg::ExecCommandBegin(ev) if ev.call_id == call_id => Some(ev.clone()),
+        _ => None,
+    })
+    .await;
+
+    let pid = wait_for_pid_file(&pid_path).await?;
+    assert!(
+        pid.chars().all(|ch| ch.is_ascii_digit()),
+        "expected numeric pid, got {pid:?}"
+    );
+
+    codex.submit(Op::Interrupt).await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
     wait_for_process_exit(&pid).await?;
 
     Ok(())
@@ -1936,7 +2124,10 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1949,6 +2140,7 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
     let first_args = serde_json::json!({
         "cmd": "/bin/cat",
         "yield_time_ms": 200,
+        "tty": true,
     });
 
     let second_call_id = "uexec-stdin";
@@ -1990,6 +2182,7 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "run unified exec".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -1997,7 +2190,10 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -2048,7 +2244,10 @@ async fn unified_exec_streams_after_lagged_output() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2122,6 +2321,7 @@ PY
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "exercise lag handling".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -2129,7 +2329,10 @@ PY
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
     // This is a worst case scenario for the truncate logic.
@@ -2179,7 +2382,10 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2233,6 +2439,7 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "check timeout".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -2240,7 +2447,10 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -2285,7 +2495,10 @@ async fn unified_exec_formats_large_output_summary() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2326,6 +2539,7 @@ PY
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "summarize large output".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -2333,7 +2547,10 @@ PY
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -2370,7 +2587,10 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2404,15 +2624,19 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "summarize large output".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
             // Important!
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -2450,7 +2674,10 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2506,14 +2733,18 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "start python under seatbelt".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -2565,7 +2796,10 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2598,6 +2832,7 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "summarize large output".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -2605,7 +2840,10 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 
@@ -2638,7 +2876,10 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2654,6 +2895,7 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
     let keep_args = serde_json::json!({
         "cmd": "/bin/cat",
         "yield_time_ms": 250,
+        "tty": true,
     });
 
     let prune_call_id = "uexec-prune-target";
@@ -2661,6 +2903,7 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
     let prune_args = serde_json::json!({
         "cmd": "sleep 1",
         "yield_time_ms": 1_250,
+        "tty": true,
     });
 
     let mut events = vec![ev_response_created("resp-prune-1")];
@@ -2728,6 +2971,7 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
                 text: "fill session cache".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
@@ -2735,7 +2979,10 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await?;
 

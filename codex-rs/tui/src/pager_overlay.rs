@@ -17,7 +17,6 @@
 
 use std::io::Result;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::chatwidget::ActiveCellTranscriptKey;
 use crate::history_cell::HistoryCell;
@@ -92,6 +91,8 @@ const KEY_SPACE: KeyBinding = key_hint::plain(KeyCode::Char(' '));
 const KEY_SHIFT_SPACE: KeyBinding = key_hint::shift(KeyCode::Char(' '));
 const KEY_HOME: KeyBinding = key_hint::plain(KeyCode::Home);
 const KEY_END: KeyBinding = key_hint::plain(KeyCode::End);
+const KEY_LEFT: KeyBinding = key_hint::plain(KeyCode::Left);
+const KEY_RIGHT: KeyBinding = key_hint::plain(KeyCode::Right);
 const KEY_CTRL_F: KeyBinding = key_hint::ctrl(KeyCode::Char('f'));
 const KEY_CTRL_D: KeyBinding = key_hint::ctrl(KeyCode::Char('d'));
 const KEY_CTRL_B: KeyBinding = key_hint::ctrl(KeyCode::Char('b'));
@@ -297,7 +298,7 @@ impl PagerView {
             }
         }
         tui.frame_requester()
-            .schedule_frame_in(Duration::from_millis(16));
+            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
         Ok(())
     }
 
@@ -408,8 +409,9 @@ struct CellRenderable {
 
 impl Renderable for CellRenderable {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let p =
-            Paragraph::new(Text::from(self.cell.transcript_lines(area.width))).style(self.style);
+        let p = Paragraph::new(Text::from(self.cell.transcript_lines(area.width)))
+            .style(self.style)
+            .wrap(Wrap { trim: false });
         p.render(area, buf);
     }
 
@@ -538,6 +540,26 @@ impl TranscriptOverlay {
         }
     }
 
+    /// Replace committed transcript cells while keeping any cached in-progress output that is
+    /// currently shown at the end of the overlay.
+    ///
+    /// This is used when existing history is trimmed (for example after rollback) so the
+    /// transcript overlay immediately reflects the same committed cells as the main transcript.
+    pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
+        let follow_bottom = self.view.is_scrolled_to_bottom();
+        self.cells = cells;
+        if self
+            .highlight_cell
+            .is_some_and(|idx| idx >= self.cells.len())
+        {
+            self.highlight_cell = None;
+        }
+        self.rebuild_renderables();
+        if follow_bottom {
+            self.view.scroll_offset = usize::MAX;
+        }
+    }
+
     /// Sync the active-cell live tail with the current width and cell state.
     ///
     /// Recomputes the tail only when the cache key changes, preserving scroll
@@ -624,7 +646,7 @@ impl TranscriptOverlay {
         has_prior_cells: bool,
         is_stream_continuation: bool,
     ) -> Box<dyn Renderable> {
-        let paragraph = Paragraph::new(Text::from(lines));
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
         let mut renderable: Box<dyn Renderable> = Box::new(CachedRenderable::new(paragraph));
         if has_prior_cells && !is_stream_continuation {
             renderable = Box::new(InsetRenderable::new(renderable, Insets::tlbr(1, 0, 0, 0)));
@@ -637,10 +659,13 @@ impl TranscriptOverlay {
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
         render_key_hints(line1, buf, PAGER_KEY_HINTS);
 
-        let mut pairs: Vec<(&[KeyBinding], &str)> =
-            vec![(&[KEY_Q], "to quit"), (&[KEY_ESC], "to edit prev")];
+        let mut pairs: Vec<(&[KeyBinding], &str)> = vec![(&[KEY_Q], "to quit")];
         if self.highlight_cell.is_some() {
+            pairs.push((&[KEY_ESC, KEY_LEFT], "to edit prev"));
+            pairs.push((&[KEY_RIGHT], "to edit next"));
             pairs.push((&[KEY_ENTER], "to edit message"));
+        } else {
+            pairs.push((&[KEY_ESC], "to edit prev"));
         }
         render_key_hints(line2, buf, &pairs);
     }
@@ -675,6 +700,11 @@ impl TranscriptOverlay {
     }
     pub(crate) fn is_done(&self) -> bool {
         self.is_done
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committed_cell_count(&self) -> usize {
+        self.cells.len()
     }
 }
 
@@ -767,8 +797,8 @@ fn render_offset_content(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_core::protocol::ExecCommandSource;
-    use codex_core::protocol::ReviewDecision;
+    use codex_protocol::protocol::ExecCommandSource;
+    use codex_protocol::protocol::ReviewDecision;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
@@ -780,8 +810,8 @@ mod tests {
     use crate::history_cell;
     use crate::history_cell::HistoryCell;
     use crate::history_cell::new_patch_event;
-    use codex_core::protocol::FileChange;
     use codex_protocol::parse_command::ParsedCommand;
+    use codex_protocol::protocol::FileChange;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::text::Text;
@@ -816,22 +846,34 @@ mod tests {
             lines: vec![Line::from("hello")],
         })]);
 
-        // Render into a small buffer and assert the backtrack hint is present
-        let area = Rect::new(0, 0, 40, 10);
+        // Render into a wide buffer so the footer hints aren't truncated.
+        let area = Rect::new(0, 0, 120, 10);
         let mut buf = Buffer::empty(area);
         overlay.render(area, &mut buf);
 
-        // Flatten buffer to a string and check for the hint text
-        let mut s = String::new();
-        for y in area.y..area.bottom() {
-            for x in area.x..area.right() {
-                s.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
-            }
-            s.push('\n');
-        }
+        let s = buffer_to_text(&buf, area);
         assert!(
             s.contains("edit prev"),
             "expected 'edit prev' hint in overlay footer, got: {s:?}"
+        );
+    }
+
+    #[test]
+    fn edit_next_hint_is_visible_when_highlighted() {
+        let mut overlay = TranscriptOverlay::new(vec![Arc::new(TestCell {
+            lines: vec![Line::from("hello")],
+        })]);
+        overlay.set_highlight_cell(Some(0));
+
+        // Render into a wide buffer so the footer hints aren't truncated.
+        let area = Rect::new(0, 0, 120, 10);
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+
+        let s = buffer_to_text(&buf, area);
+        assert!(
+            s.contains("edit next"),
+            "expected 'edit next' hint in overlay footer, got: {s:?}"
         );
     }
 

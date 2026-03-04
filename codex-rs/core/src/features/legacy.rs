@@ -10,6 +10,10 @@ struct Alias {
 
 const ALIASES: &[Alias] = &[
     Alias {
+        legacy_key: "connectors",
+        feature: Feature::Apps,
+    },
+    Alias {
         legacy_key: "enable_experimental_windows_sandbox",
         feature: Feature::WindowsSandbox,
     },
@@ -28,6 +32,14 @@ const ALIASES: &[Alias] = &[
     Alias {
         legacy_key: "web_search",
         feature: Feature::WebSearchRequest,
+    },
+    Alias {
+        legacy_key: "collab",
+        feature: Feature::Collab,
+    },
+    Alias {
+        legacy_key: "memory_tool",
+        feature: Feature::MemoryTool,
     },
 ];
 

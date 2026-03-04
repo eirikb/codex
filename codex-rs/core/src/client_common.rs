@@ -1,12 +1,13 @@
 use crate::client_common::tools::ToolSpec;
+use crate::config::types::Personality;
 use crate::error::Result;
 pub use codex_api::common::ResponseEvent;
+use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::openai_models::ModelInfo;
 use futures::Stream;
 use serde::Deserialize;
 use serde_json::Value;
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::pin::Pin;
 use std::task::Context;
@@ -34,22 +35,16 @@ pub struct Prompt {
     /// Whether parallel tool calls are permitted for this prompt.
     pub(crate) parallel_tool_calls: bool,
 
-    /// Optional override for the built-in BASE_INSTRUCTIONS.
-    pub base_instructions_override: Option<String>,
+    pub base_instructions: BaseInstructions,
+
+    /// Optionally specify the personality of the model.
+    pub personality: Option<Personality>,
 
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
 }
 
 impl Prompt {
-    pub(crate) fn get_full_instructions<'a>(&'a self, model: &'a ModelInfo) -> Cow<'a, str> {
-        Cow::Borrowed(
-            self.base_instructions_override
-                .as_deref()
-                .unwrap_or(model.base_instructions.as_str()),
-        )
-    }
-
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
         let mut input = self.input.clone();
 
@@ -89,23 +84,19 @@ fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
                 shell_call_ids.insert(call_id.clone());
             }
         }
-        ResponseItem::CustomToolCallOutput { call_id, output } => {
-            if shell_call_ids.remove(call_id)
-                && let Some(structured) = parse_structured_shell_output(output)
-            {
-                *output = structured
-            }
-        }
         ResponseItem::FunctionCall { name, call_id, .. }
             if is_shell_tool_name(name) || name == "apply_patch" =>
         {
             shell_call_ids.insert(call_id.clone());
         }
-        ResponseItem::FunctionCallOutput { call_id, output } => {
+        ResponseItem::FunctionCallOutput { call_id, output }
+        | ResponseItem::CustomToolCallOutput { call_id, output } => {
             if shell_call_ids.remove(call_id)
-                && let Some(structured) = parse_structured_shell_output(&output.content)
+                && let Some(structured) = output
+                    .text_content()
+                    .and_then(parse_structured_shell_output)
             {
-                output.content = structured
+                output.body = FunctionCallOutputBody::Text(structured);
             }
         }
         _ => {}
@@ -175,6 +166,8 @@ pub(crate) mod tools {
         Function(ResponsesApiTool),
         #[serde(rename = "local_shell")]
         LocalShell {},
+        #[serde(rename = "image_generation")]
+        ImageGeneration {},
         // TODO: Understand why we get an error on web_search although the API docs say it's supported.
         // https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses#:~:text=%7B%20type%3A%20%22web_search%22%20%7D%2C
         // The `external_web_access` field determines whether the web search is over cached or live content.
@@ -193,6 +186,7 @@ pub(crate) mod tools {
             match self {
                 ToolSpec::Function(tool) => tool.name.as_str(),
                 ToolSpec::LocalShell {} => "local_shell",
+                ToolSpec::ImageGeneration {} => "image_generation",
                 ToolSpec::WebSearch { .. } => "web_search",
                 ToolSpec::Freeform(tool) => tool.name.as_str(),
             }
@@ -243,94 +237,29 @@ mod tests {
     use codex_api::common::OpenAiVerbosity;
     use codex_api::common::TextControls;
     use codex_api::create_text_param_for_request;
+    use codex_protocol::config_types::ServiceTier;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use pretty_assertions::assert_eq;
 
-    use crate::config::test_config;
-    use crate::models_manager::manager::ModelsManager;
-
     use super::*;
-
-    struct InstructionsTestCase {
-        pub slug: &'static str,
-        pub expects_apply_patch_instructions: bool,
-    }
-    #[test]
-    fn get_full_instructions_no_user_content() {
-        let prompt = Prompt {
-            ..Default::default()
-        };
-        let prompt_with_apply_patch_instructions =
-            include_str!("../prompt_with_apply_patch_instructions.md");
-        let test_cases = vec![
-            InstructionsTestCase {
-                slug: "gpt-3.5",
-                expects_apply_patch_instructions: true,
-            },
-            InstructionsTestCase {
-                slug: "gpt-4.1",
-                expects_apply_patch_instructions: true,
-            },
-            InstructionsTestCase {
-                slug: "gpt-4o",
-                expects_apply_patch_instructions: true,
-            },
-            InstructionsTestCase {
-                slug: "gpt-5",
-                expects_apply_patch_instructions: true,
-            },
-            InstructionsTestCase {
-                slug: "gpt-5.1",
-                expects_apply_patch_instructions: false,
-            },
-            InstructionsTestCase {
-                slug: "codex-mini-latest",
-                expects_apply_patch_instructions: true,
-            },
-            InstructionsTestCase {
-                slug: "gpt-oss:120b",
-                expects_apply_patch_instructions: false,
-            },
-            InstructionsTestCase {
-                slug: "gpt-5.1-codex",
-                expects_apply_patch_instructions: false,
-            },
-            InstructionsTestCase {
-                slug: "gpt-5.1-codex-max",
-                expects_apply_patch_instructions: false,
-            },
-        ];
-        for test_case in test_cases {
-            let config = test_config();
-            let model_info = ModelsManager::construct_model_info_offline(test_case.slug, &config);
-            if test_case.expects_apply_patch_instructions {
-                assert_eq!(
-                    model_info.base_instructions.as_str(),
-                    prompt_with_apply_patch_instructions
-                );
-            }
-
-            let expected = model_info.base_instructions.as_str();
-            let full = prompt.get_full_instructions(&model_info);
-            assert_eq!(full, expected);
-        }
-    }
 
     #[test]
     fn serializes_text_verbosity_when_set() {
         let input: Vec<ResponseItem> = vec![];
         let tools: Vec<serde_json::Value> = vec![];
         let req = ResponsesApiRequest {
-            model: "gpt-5.1",
-            instructions: "i",
-            input: &input,
-            tools: &tools,
-            tool_choice: "auto",
+            model: "gpt-5.1".to_string(),
+            instructions: "i".to_string(),
+            input,
+            tools,
+            tool_choice: "auto".to_string(),
             parallel_tool_calls: true,
             reasoning: None,
             store: false,
             stream: true,
             include: vec![],
             prompt_cache_key: None,
+            service_tier: None,
             text: Some(TextControls {
                 verbosity: Some(OpenAiVerbosity::Low),
                 format: None,
@@ -361,17 +290,18 @@ mod tests {
             create_text_param_for_request(None, &Some(schema.clone())).expect("text controls");
 
         let req = ResponsesApiRequest {
-            model: "gpt-5.1",
-            instructions: "i",
-            input: &input,
-            tools: &tools,
-            tool_choice: "auto",
+            model: "gpt-5.1".to_string(),
+            instructions: "i".to_string(),
+            input,
+            tools,
+            tool_choice: "auto".to_string(),
             parallel_tool_calls: true,
             reasoning: None,
             store: false,
             stream: true,
             include: vec![],
             prompt_cache_key: None,
+            service_tier: None,
             text: Some(text_controls),
         };
 
@@ -397,21 +327,105 @@ mod tests {
         let input: Vec<ResponseItem> = vec![];
         let tools: Vec<serde_json::Value> = vec![];
         let req = ResponsesApiRequest {
-            model: "gpt-5.1",
-            instructions: "i",
-            input: &input,
-            tools: &tools,
-            tool_choice: "auto",
+            model: "gpt-5.1".to_string(),
+            instructions: "i".to_string(),
+            input,
+            tools,
+            tool_choice: "auto".to_string(),
             parallel_tool_calls: true,
             reasoning: None,
             store: false,
             stream: true,
             include: vec![],
             prompt_cache_key: None,
+            service_tier: None,
             text: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
         assert!(v.get("text").is_none());
+    }
+
+    #[test]
+    fn serializes_flex_service_tier_when_set() {
+        let req = ResponsesApiRequest {
+            model: "gpt-5.1".to_string(),
+            instructions: "i".to_string(),
+            input: vec![],
+            tools: vec![],
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            prompt_cache_key: None,
+            service_tier: Some(ServiceTier::Flex.to_string()),
+            text: None,
+        };
+
+        let v = serde_json::to_value(&req).expect("json");
+        assert_eq!(
+            v.get("service_tier").and_then(|tier| tier.as_str()),
+            Some("flex")
+        );
+    }
+
+    #[test]
+    fn reserializes_shell_outputs_for_function_and_custom_tool_calls() {
+        let raw_output = r#"{"output":"hello","metadata":{"exit_code":0,"duration_seconds":0.5}}"#;
+        let expected_output = "Exit code: 0\nWall time: 0.5 seconds\nOutput:\nhello";
+        let mut items = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-1".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload::from_text(raw_output.to_string()),
+            },
+            ResponseItem::CustomToolCall {
+                id: None,
+                status: None,
+                call_id: "call-2".to_string(),
+                name: "apply_patch".to_string(),
+                input: "*** Begin Patch".to_string(),
+            },
+            ResponseItem::CustomToolCallOutput {
+                call_id: "call-2".to_string(),
+                output: FunctionCallOutputPayload::from_text(raw_output.to_string()),
+            },
+        ];
+
+        reserialize_shell_outputs(&mut items);
+
+        assert_eq!(
+            items,
+            vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "shell".to_string(),
+                    arguments: "{}".to_string(),
+                    call_id: "call-1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call-1".to_string(),
+                    output: FunctionCallOutputPayload::from_text(expected_output.to_string()),
+                },
+                ResponseItem::CustomToolCall {
+                    id: None,
+                    status: None,
+                    call_id: "call-2".to_string(),
+                    name: "apply_patch".to_string(),
+                    input: "*** Begin Patch".to_string(),
+                },
+                ResponseItem::CustomToolCallOutput {
+                    call_id: "call-2".to_string(),
+                    output: FunctionCallOutputPayload::from_text(expected_output.to_string()),
+                },
+            ]
+        );
     }
 }

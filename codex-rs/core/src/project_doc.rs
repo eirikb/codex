@@ -3,23 +3,31 @@
 //! Project-level documentation is primarily stored in files named `AGENTS.md`.
 //! Additional fallback filenames can be configured via `project_doc_fallback_filenames`.
 //! We include the concatenation of all files found along the path from the
-//! repository root to the current working directory as follows:
+//! project root to the current working directory as follows:
 //!
-//! 1.  Determine the Git repository root by walking upwards from the current
-//!     working directory until a `.git` directory or file is found. If no Git
-//!     root is found, only the current working directory is considered.
-//! 2.  Collect every `AGENTS.md` found from the repository root down to the
+//! 1.  Determine the project root by walking upwards from the current working
+//!     directory until a configured `project_root_markers` entry is found.
+//!     When `project_root_markers` is unset, the default marker list is used
+//!     (`.git`). If no marker is found, only the current working directory is
+//!     considered. An empty marker list disables parent traversal.
+//! 2.  Collect every `AGENTS.md` found from the project root down to the
 //!     current working directory (inclusive) and concatenate their contents in
 //!     that order.
-//! 3.  We do **not** walk past the Git root.
+//! 3.  We do **not** walk past the project root.
 
 use crate::config::Config;
+use crate::config_loader::ConfigLayerStackOrdering;
+use crate::config_loader::default_project_root_markers;
+use crate::config_loader::merge_toml_values;
+use crate::config_loader::project_root_markers_from_config;
 use crate::features::Feature;
 use crate::skills::SkillMetadata;
 use crate::skills::render_skills_section;
+use codex_app_server_protocol::ConfigLayerSource;
 use dunce::canonicalize as normalize_path;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
+use toml::Value as TomlValue;
 use tracing::error;
 
 pub(crate) const HIERARCHICAL_AGENTS_MESSAGE: &str =
@@ -33,6 +41,40 @@ pub const LOCAL_PROJECT_DOC_FILENAME: &str = "AGENTS.override.md";
 /// When both `Config::instructions` and the project doc are present, they will
 /// be concatenated with the following separator.
 const PROJECT_DOC_SEPARATOR: &str = "\n\n--- project-doc ---\n\n";
+
+fn render_js_repl_instructions(config: &Config) -> Option<String> {
+    if !config.features.enabled(Feature::JsRepl) {
+        return None;
+    }
+
+    let mut section = String::from("## JavaScript REPL (Node)\n");
+    section.push_str(
+        "- Use `js_repl` for Node-backed JavaScript with top-level await in a persistent kernel.\n",
+    );
+    section.push_str("- `js_repl` is a freeform/custom tool. Direct `js_repl` calls must send raw JavaScript tool input (optionally with first-line `// codex-js-repl: timeout_ms=15000`). Do not wrap code in JSON (for example `{\"code\":\"...\"}`), quotes, or markdown code fences.\n");
+    section.push_str(
+        "- Helpers: `codex.tmpDir`, `codex.tool(name, args?)`, and `codex.emitImage(imageLike)`.\n",
+    );
+    section.push_str("- `codex.tool` executes a normal tool call and resolves to the raw tool output object. Use it for shell and non-shell tools alike. Nested tool outputs stay inside JavaScript unless you emit them explicitly.\n");
+    section.push_str("- `codex.emitImage(...)` adds exactly one image to the outer `js_repl` function output. It accepts a direct image URL, a single `input_image` item, an object like `{ bytes, mimeType }`, or a raw tool response object with exactly one image and no text. It rejects mixed text-and-image content.\n");
+    section.push_str("- Example of sharing an in-memory Playwright screenshot: `await codex.emitImage({ bytes: await page.screenshot({ type: \"jpeg\", quality: 85 }), mimeType: \"image/jpeg\" })`.\n");
+    section.push_str("- Example of sharing a local image tool result: `await codex.emitImage(codex.tool(\"view_image\", { path: \"/absolute/path\" }))`.\n");
+    if config.features.enabled(Feature::ImageDetailOriginal) {
+        section.push_str("- When generating or converting images for `view_image` in `js_repl`, prefer JPEG at 85% quality unless lossless quality is strictly required; other formats can be used if the user requests them. This keeps uploads smaller and reduces the chance of hitting image size caps.\n");
+    }
+    section.push_str("- Top-level bindings persist across cells. If you hit `SyntaxError: Identifier 'x' has already been declared`, reuse the binding, pick a new name, wrap in `{ ... }` for block scope, or reset the kernel with `js_repl_reset`.\n");
+    section.push_str("- Top-level static import declarations (for example `import x from \"pkg\"`) are currently unsupported in `js_repl`; use dynamic imports with `await import(\"pkg\")` instead.\n");
+
+    if config.features.enabled(Feature::JsReplToolsOnly) {
+        section.push_str("- Do not call tools directly; use `js_repl` + `codex.tool(...)` for all tool calls, including shell commands.\n");
+        section
+            .push_str("- MCP tools (if any) can also be called by name via `codex.tool(...)`.\n");
+    }
+
+    section.push_str("- Avoid direct access to `process.stdout` / `process.stderr` / `process.stdin`; it can corrupt the JSON line protocol. Use `console.log`, `codex.tool(...)`, and `codex.emitImage(...)`.");
+
+    Some(section)
+}
 
 /// Combines `Config::instructions` and `AGENTS.md` (if present) into a single
 /// string of instructions.
@@ -60,6 +102,13 @@ pub(crate) async fn get_user_instructions(
             error!("error trying to find project doc: {e:#}");
         }
     };
+
+    if let Some(js_repl_section) = render_js_repl_instructions(config) {
+        if !output.is_empty() {
+            output.push_str("\n\n");
+        }
+        output.push_str(&js_repl_section);
+    }
 
     let skills_section = skills.and_then(render_skills_section);
     if let Some(skills_section) = skills_section {
@@ -144,7 +193,7 @@ pub async fn read_project_docs(config: &Config) -> std::io::Result<Option<String
 
 /// Discover the list of AGENTS.md files using the same search rules as
 /// `read_project_docs`, but return the file paths instead of concatenated
-/// contents. The list is ordered from repository root to the current working
+/// contents. The list is ordered from project root to the current working
 /// directory (inclusive). Symlinks are allowed. When `project_doc_max_bytes`
 /// is zero, returns an empty list.
 pub fn discover_project_doc_paths(config: &Config) -> std::io::Result<Vec<PathBuf>> {
@@ -153,43 +202,62 @@ pub fn discover_project_doc_paths(config: &Config) -> std::io::Result<Vec<PathBu
         dir = canon;
     }
 
-    // Build chain from cwd upwards and detect git root.
-    let mut chain: Vec<PathBuf> = vec![dir.clone()];
-    let mut git_root: Option<PathBuf> = None;
-    let mut cursor = dir;
-    while let Some(parent) = cursor.parent() {
-        let git_marker = cursor.join(".git");
-        let git_exists = match std::fs::metadata(&git_marker) {
-            Ok(_) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(e),
-        };
-
-        if git_exists {
-            git_root = Some(cursor.clone());
-            break;
+    let mut merged = TomlValue::Table(toml::map::Map::new());
+    for layer in config
+        .config_layer_stack
+        .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, false)
+    {
+        if matches!(layer.name, ConfigLayerSource::Project { .. }) {
+            continue;
         }
-
-        chain.push(parent.to_path_buf());
-        cursor = parent.to_path_buf();
+        merge_toml_values(&mut merged, &layer.config);
     }
-
-    let search_dirs: Vec<PathBuf> = if let Some(root) = git_root {
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        let mut saw_root = false;
-        for p in chain.iter().rev() {
-            if !saw_root {
-                if p == &root {
-                    saw_root = true;
-                } else {
-                    continue;
+    let project_root_markers = match project_root_markers_from_config(&merged) {
+        Ok(Some(markers)) => markers,
+        Ok(None) => default_project_root_markers(),
+        Err(err) => {
+            tracing::warn!("invalid project_root_markers: {err}");
+            default_project_root_markers()
+        }
+    };
+    let mut project_root = None;
+    if !project_root_markers.is_empty() {
+        for ancestor in dir.ancestors() {
+            for marker in &project_root_markers {
+                let marker_path = ancestor.join(marker);
+                let marker_exists = match std::fs::metadata(&marker_path) {
+                    Ok(_) => true,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(e) => return Err(e),
+                };
+                if marker_exists {
+                    project_root = Some(ancestor.to_path_buf());
+                    break;
                 }
             }
-            dirs.push(p.clone());
+            if project_root.is_some() {
+                break;
+            }
         }
+    }
+
+    let search_dirs: Vec<PathBuf> = if let Some(root) = project_root {
+        let mut dirs = Vec::new();
+        let mut cursor = dir.as_path();
+        loop {
+            dirs.push(cursor.to_path_buf());
+            if cursor == root {
+                break;
+            }
+            let Some(parent) = cursor.parent() else {
+                break;
+            };
+            cursor = parent;
+        }
+        dirs.reverse();
         dirs
     } else {
-        vec![config.cwd.clone()]
+        vec![dir]
     };
 
     let mut found: Vec<PathBuf> = Vec::new();
@@ -236,7 +304,10 @@ fn candidate_filenames<'a>(config: &'a Config) -> Vec<&'a str> {
 mod tests {
     use super::*;
     use crate::config::ConfigBuilder;
-    use crate::skills::load_skills;
+    use crate::features::Feature;
+    use crate::skills::loader::SkillRoot;
+    use crate::skills::loader::load_skills_from_roots;
+    use codex_protocol::protocol::SkillScope;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -273,6 +344,42 @@ mod tests {
             .map(std::string::ToString::to_string)
             .collect();
         config
+    }
+
+    async fn make_config_with_project_root_markers(
+        root: &TempDir,
+        limit: usize,
+        instructions: Option<&str>,
+        markers: &[&str],
+    ) -> Config {
+        let codex_home = TempDir::new().unwrap();
+        let cli_overrides = vec![(
+            "project_root_markers".to_string(),
+            TomlValue::Array(
+                markers
+                    .iter()
+                    .map(|marker| TomlValue::String((*marker).to_string()))
+                    .collect(),
+            ),
+        )];
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .cli_overrides(cli_overrides)
+            .build()
+            .await
+            .expect("defaults for test should always succeed");
+
+        config.cwd = root.path().to_path_buf();
+        config.project_doc_max_bytes = limit;
+        config.user_instructions = instructions.map(ToOwned::to_owned);
+        config
+    }
+
+    fn load_test_skills(config: &Config) -> crate::skills::SkillLoadOutcome {
+        load_skills_from_roots([SkillRoot {
+            path: config.codex_home.join("skills"),
+            scope: SkillScope::User,
+        }])
     }
 
     /// AGENTS.md missing – should yield `None`.
@@ -364,6 +471,59 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn js_repl_instructions_are_appended_when_enabled() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = make_config(&tmp, 4096, None).await;
+        cfg.features
+            .enable(Feature::JsRepl)
+            .expect("test config should allow js_repl");
+
+        let res = get_user_instructions(&cfg, None)
+            .await
+            .expect("js_repl instructions expected");
+        let expected = "## JavaScript REPL (Node)\n- Use `js_repl` for Node-backed JavaScript with top-level await in a persistent kernel.\n- `js_repl` is a freeform/custom tool. Direct `js_repl` calls must send raw JavaScript tool input (optionally with first-line `// codex-js-repl: timeout_ms=15000`). Do not wrap code in JSON (for example `{\"code\":\"...\"}`), quotes, or markdown code fences.\n- Helpers: `codex.tmpDir`, `codex.tool(name, args?)`, and `codex.emitImage(imageLike)`.\n- `codex.tool` executes a normal tool call and resolves to the raw tool output object. Use it for shell and non-shell tools alike. Nested tool outputs stay inside JavaScript unless you emit them explicitly.\n- `codex.emitImage(...)` adds exactly one image to the outer `js_repl` function output. It accepts a direct image URL, a single `input_image` item, an object like `{ bytes, mimeType }`, or a raw tool response object with exactly one image and no text. It rejects mixed text-and-image content.\n- Example of sharing an in-memory Playwright screenshot: `await codex.emitImage({ bytes: await page.screenshot({ type: \"jpeg\", quality: 85 }), mimeType: \"image/jpeg\" })`.\n- Example of sharing a local image tool result: `await codex.emitImage(codex.tool(\"view_image\", { path: \"/absolute/path\" }))`.\n- Top-level bindings persist across cells. If you hit `SyntaxError: Identifier 'x' has already been declared`, reuse the binding, pick a new name, wrap in `{ ... }` for block scope, or reset the kernel with `js_repl_reset`.\n- Top-level static import declarations (for example `import x from \"pkg\"`) are currently unsupported in `js_repl`; use dynamic imports with `await import(\"pkg\")` instead.\n- Avoid direct access to `process.stdout` / `process.stderr` / `process.stdin`; it can corrupt the JSON line protocol. Use `console.log`, `codex.tool(...)`, and `codex.emitImage(...)`.";
+        assert_eq!(res, expected);
+    }
+
+    #[tokio::test]
+    async fn js_repl_tools_only_instructions_are_feature_gated() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = make_config(&tmp, 4096, None).await;
+        let mut features = cfg.features.get().clone();
+        features
+            .enable(Feature::JsRepl)
+            .enable(Feature::JsReplToolsOnly);
+        cfg.features
+            .set(features)
+            .expect("test config should allow js_repl tool restrictions");
+
+        let res = get_user_instructions(&cfg, None)
+            .await
+            .expect("js_repl instructions expected");
+        let expected = "## JavaScript REPL (Node)\n- Use `js_repl` for Node-backed JavaScript with top-level await in a persistent kernel.\n- `js_repl` is a freeform/custom tool. Direct `js_repl` calls must send raw JavaScript tool input (optionally with first-line `// codex-js-repl: timeout_ms=15000`). Do not wrap code in JSON (for example `{\"code\":\"...\"}`), quotes, or markdown code fences.\n- Helpers: `codex.tmpDir`, `codex.tool(name, args?)`, and `codex.emitImage(imageLike)`.\n- `codex.tool` executes a normal tool call and resolves to the raw tool output object. Use it for shell and non-shell tools alike. Nested tool outputs stay inside JavaScript unless you emit them explicitly.\n- `codex.emitImage(...)` adds exactly one image to the outer `js_repl` function output. It accepts a direct image URL, a single `input_image` item, an object like `{ bytes, mimeType }`, or a raw tool response object with exactly one image and no text. It rejects mixed text-and-image content.\n- Example of sharing an in-memory Playwright screenshot: `await codex.emitImage({ bytes: await page.screenshot({ type: \"jpeg\", quality: 85 }), mimeType: \"image/jpeg\" })`.\n- Example of sharing a local image tool result: `await codex.emitImage(codex.tool(\"view_image\", { path: \"/absolute/path\" }))`.\n- Top-level bindings persist across cells. If you hit `SyntaxError: Identifier 'x' has already been declared`, reuse the binding, pick a new name, wrap in `{ ... }` for block scope, or reset the kernel with `js_repl_reset`.\n- Top-level static import declarations (for example `import x from \"pkg\"`) are currently unsupported in `js_repl`; use dynamic imports with `await import(\"pkg\")` instead.\n- Do not call tools directly; use `js_repl` + `codex.tool(...)` for all tool calls, including shell commands.\n- MCP tools (if any) can also be called by name via `codex.tool(...)`.\n- Avoid direct access to `process.stdout` / `process.stderr` / `process.stdin`; it can corrupt the JSON line protocol. Use `console.log`, `codex.tool(...)`, and `codex.emitImage(...)`.";
+        assert_eq!(res, expected);
+    }
+
+    #[tokio::test]
+    async fn js_repl_original_resolution_guidance_is_feature_gated() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = make_config(&tmp, 4096, None).await;
+        let mut features = cfg.features.get().clone();
+        features
+            .enable(Feature::JsRepl)
+            .enable(Feature::ImageDetailOriginal);
+        cfg.features
+            .set(features)
+            .expect("test config should allow js_repl image detail settings");
+
+        let res = get_user_instructions(&cfg, None)
+            .await
+            .expect("js_repl instructions expected");
+        let expected = "## JavaScript REPL (Node)\n- Use `js_repl` for Node-backed JavaScript with top-level await in a persistent kernel.\n- `js_repl` is a freeform/custom tool. Direct `js_repl` calls must send raw JavaScript tool input (optionally with first-line `// codex-js-repl: timeout_ms=15000`). Do not wrap code in JSON (for example `{\"code\":\"...\"}`), quotes, or markdown code fences.\n- Helpers: `codex.tmpDir`, `codex.tool(name, args?)`, and `codex.emitImage(imageLike)`.\n- `codex.tool` executes a normal tool call and resolves to the raw tool output object. Use it for shell and non-shell tools alike. Nested tool outputs stay inside JavaScript unless you emit them explicitly.\n- `codex.emitImage(...)` adds exactly one image to the outer `js_repl` function output. It accepts a direct image URL, a single `input_image` item, an object like `{ bytes, mimeType }`, or a raw tool response object with exactly one image and no text. It rejects mixed text-and-image content.\n- Example of sharing an in-memory Playwright screenshot: `await codex.emitImage({ bytes: await page.screenshot({ type: \"jpeg\", quality: 85 }), mimeType: \"image/jpeg\" })`.\n- Example of sharing a local image tool result: `await codex.emitImage(codex.tool(\"view_image\", { path: \"/absolute/path\" }))`.\n- When generating or converting images for `view_image` in `js_repl`, prefer JPEG at 85% quality unless lossless quality is strictly required; other formats can be used if the user requests them. This keeps uploads smaller and reduces the chance of hitting image size caps.\n- Top-level bindings persist across cells. If you hit `SyntaxError: Identifier 'x' has already been declared`, reuse the binding, pick a new name, wrap in `{ ... }` for block scope, or reset the kernel with `js_repl_reset`.\n- Top-level static import declarations (for example `import x from \"pkg\"`) are currently unsupported in `js_repl`; use dynamic imports with `await import(\"pkg\")` instead.\n- Avoid direct access to `process.stdout` / `process.stderr` / `process.stdin`; it can corrupt the JSON line protocol. Use `console.log`, `codex.tool(...)`, and `codex.emitImage(...)`.";
+        assert_eq!(res, expected);
+    }
+
     /// When both system instructions *and* a project doc are present the two
     /// should be concatenated with the separator.
     #[tokio::test]
@@ -424,6 +584,35 @@ mod tests {
             .await
             .expect("doc expected");
         assert_eq!(res, "root doc\n\ncrate doc");
+    }
+
+    #[tokio::test]
+    async fn project_root_markers_are_honored_for_agents_discovery() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join(".codex-root"), "").unwrap();
+        fs::write(root.path().join("AGENTS.md"), "parent doc").unwrap();
+
+        let nested = root.path().join("dir1");
+        fs::create_dir_all(nested.join(".git")).unwrap();
+        fs::write(nested.join("AGENTS.md"), "child doc").unwrap();
+
+        let mut cfg =
+            make_config_with_project_root_markers(&root, 4096, None, &[".codex-root"]).await;
+        cfg.cwd = nested;
+
+        let discovery = discover_project_doc_paths(&cfg).expect("discover paths");
+        let expected_parent =
+            dunce::canonicalize(root.path().join("AGENTS.md")).expect("canonical parent doc path");
+        let expected_child =
+            dunce::canonicalize(cfg.cwd.join("AGENTS.md")).expect("canonical child doc path");
+        assert_eq!(discovery.len(), 2);
+        assert_eq!(discovery[0], expected_parent);
+        assert_eq!(discovery[1], expected_child);
+
+        let res = get_user_instructions(&cfg, None)
+            .await
+            .expect("doc expected");
+        assert_eq!(res, "parent doc\n\nchild doc");
     }
 
     /// AGENTS.override.md is preferred over AGENTS.md when both are present.
@@ -502,7 +691,7 @@ mod tests {
             "extract from pdfs",
         );
 
-        let skills = load_skills(&cfg);
+        let skills = load_test_skills(&cfg);
         let res = get_user_instructions(
             &cfg,
             skills.errors.is_empty().then_some(skills.skills.as_slice()),
@@ -516,7 +705,7 @@ mod tests {
         )
         .unwrap_or_else(|_| cfg.codex_home.join("skills/pdf-processing/SKILL.md"));
         let expected_path_str = expected_path.to_string_lossy().replace('\\', "/");
-        let usage_rules = "- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.\n- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.\n- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.\n- How to use a skill (progressive disclosure):\n  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.\n  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.\n  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.\n  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.\n- Coordination and sequencing:\n  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.\n  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.\n- Context hygiene:\n  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.\n  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.\n  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.\n- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.";
+        let usage_rules = "- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.\n- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.\n- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.\n- How to use a skill (progressive disclosure):\n  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.\n  2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.\n  3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.\n  4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.\n  5) If `assets/` or templates exist, reuse them instead of recreating from scratch.\n- Coordination and sequencing:\n  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.\n  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.\n- Context hygiene:\n  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.\n  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.\n  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.\n- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.";
         let expected = format!(
             "base doc\n\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.\n### Available skills\n- pdf-processing: extract from pdfs (file: {expected_path_str})\n### How to use skills\n{usage_rules}"
         );
@@ -529,7 +718,7 @@ mod tests {
         let cfg = make_config(&tmp, 4096, None).await;
         create_skill(cfg.codex_home.clone(), "linting", "run clippy");
 
-        let skills = load_skills(&cfg);
+        let skills = load_test_skills(&cfg);
         let res = get_user_instructions(
             &cfg,
             skills.errors.is_empty().then_some(skills.skills.as_slice()),
@@ -540,11 +729,39 @@ mod tests {
             dunce::canonicalize(cfg.codex_home.join("skills/linting/SKILL.md").as_path())
                 .unwrap_or_else(|_| cfg.codex_home.join("skills/linting/SKILL.md"));
         let expected_path_str = expected_path.to_string_lossy().replace('\\', "/");
-        let usage_rules = "- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.\n- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.\n- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.\n- How to use a skill (progressive disclosure):\n  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.\n  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.\n  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.\n  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.\n- Coordination and sequencing:\n  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.\n  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.\n- Context hygiene:\n  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.\n  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.\n  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.\n- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.";
+        let usage_rules = "- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.\n- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.\n- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.\n- How to use a skill (progressive disclosure):\n  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.\n  2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.\n  3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.\n  4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.\n  5) If `assets/` or templates exist, reuse them instead of recreating from scratch.\n- Coordination and sequencing:\n  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.\n  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.\n- Context hygiene:\n  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.\n  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.\n  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.\n- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.";
         let expected = format!(
             "## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.\n### Available skills\n- linting: run clippy (file: {expected_path_str})\n### How to use skills\n{usage_rules}"
         );
         assert_eq!(res, expected);
+    }
+
+    #[tokio::test]
+    async fn apps_feature_does_not_emit_user_instructions_by_itself() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = make_config(&tmp, 4096, None).await;
+        cfg.features
+            .enable(Feature::Apps)
+            .expect("test config should allow apps");
+
+        let res = get_user_instructions(&cfg, None).await;
+        assert_eq!(res, None);
+    }
+
+    #[tokio::test]
+    async fn apps_feature_does_not_append_to_project_doc_user_instructions() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::write(tmp.path().join("AGENTS.md"), "base doc").unwrap();
+
+        let mut cfg = make_config(&tmp, 4096, None).await;
+        cfg.features
+            .enable(Feature::Apps)
+            .expect("test config should allow apps");
+
+        let res = get_user_instructions(&cfg, None)
+            .await
+            .expect("instructions expected");
+        assert_eq!(res, "base doc");
     }
 
     fn create_skill(codex_home: PathBuf, name: &str, description: &str) {

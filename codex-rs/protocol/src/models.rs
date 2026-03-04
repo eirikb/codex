@@ -1,24 +1,32 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use codex_utils_image::load_and_resize_to_fit;
-use mcp_types::CallToolResult;
-use mcp_types::ContentBlock;
+use codex_utils_image::PromptImageMode;
+use codex_utils_image::load_for_prompt;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::ser::Serializer;
 use ts_rs::TS;
 
+use crate::config_types::CollaborationMode;
 use crate::config_types::SandboxMode;
 use crate::protocol::AskForApproval;
+use crate::protocol::COLLABORATION_MODE_CLOSE_TAG;
+use crate::protocol::COLLABORATION_MODE_OPEN_TAG;
 use crate::protocol::NetworkAccess;
+use crate::protocol::REALTIME_CONVERSATION_CLOSE_TAG;
+use crate::protocol::REALTIME_CONVERSATION_OPEN_TAG;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::WritableRoot;
 use crate::user_input::UserInput;
+use codex_execpolicy::Policy;
 use codex_git::GhostCommit;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_image::error::ImageProcessingError;
 use schemars::JsonSchema;
+
+use crate::mcp::CallToolResult;
 
 /// Controls whether a command should use the session sandbox or bypass it.
 #[derive(
@@ -31,11 +39,125 @@ pub enum SandboxPermissions {
     UseDefault,
     /// Request to run outside the sandbox
     RequireEscalated,
+    /// Request to run in the sandbox with additional per-command permissions.
+    WithAdditionalPermissions,
 }
 
 impl SandboxPermissions {
+    /// True if SandboxPermissions requires full unsandboxed execution (i.e. RequireEscalated)
     pub fn requires_escalated_permissions(self) -> bool {
         matches!(self, SandboxPermissions::RequireEscalated)
+    }
+
+    /// True if SandboxPermissions requires permissions beyond UseDefault
+    pub fn requires_additional_permissions(self) -> bool {
+        !matches!(self, SandboxPermissions::UseDefault)
+    }
+}
+
+#[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct FileSystemPermissions {
+    pub read: Option<Vec<AbsolutePathBuf>>,
+    pub write: Option<Vec<AbsolutePathBuf>>,
+}
+
+impl FileSystemPermissions {
+    pub fn is_empty(&self) -> bool {
+        self.read.is_none() && self.write.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MacOsPermissions {
+    pub preferences: Option<MacOsPreferencesValue>,
+    pub automations: Option<MacOsAutomationValue>,
+    pub accessibility: Option<bool>,
+    pub calendar: Option<bool>,
+}
+
+impl MacOsPermissions {
+    pub fn is_empty(&self) -> bool {
+        self.preferences.is_none()
+            && self.automations.is_none()
+            && self.accessibility.is_none()
+            && self.calendar.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct NetworkPermissions {
+    pub enabled: Option<bool>,
+}
+
+impl NetworkPermissions {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(untagged)]
+pub enum MacOsPreferencesValue {
+    Bool(bool),
+    Mode(String),
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(untagged)]
+pub enum MacOsAutomationValue {
+    Bool(bool),
+    BundleIds(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum MacOsPreferencesPermission {
+    // IMPORTANT: ReadOnly needs to be the default because it's the
+    // security-sensitive default and keeps cf prefs working.
+    #[default]
+    ReadOnly,
+    ReadWrite,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum MacOsAutomationPermission {
+    #[default]
+    None,
+    All,
+    BundleIds(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MacOsSeatbeltProfileExtensions {
+    pub macos_preferences: MacOsPreferencesPermission,
+    pub macos_automation: MacOsAutomationPermission,
+    pub macos_accessibility: bool,
+    pub macos_calendar: bool,
+}
+
+#[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PermissionProfile {
+    pub network: Option<NetworkPermissions>,
+    pub file_system: Option<FileSystemPermissions>,
+    pub macos: Option<MacOsPermissions>,
+}
+
+impl PermissionProfile {
+    pub fn is_empty(&self) -> bool {
+        self.network
+            .as_ref()
+            .map(NetworkPermissions::is_empty)
+            .unwrap_or(true)
+            && self
+                .file_system
+                .as_ref()
+                .map(FileSystemPermissions::is_empty)
+                .unwrap_or(true)
+            && self
+                .macos
+                .as_ref()
+                .map(MacOsPermissions::is_empty)
+                .unwrap_or(true)
     }
 }
 
@@ -56,7 +178,7 @@ pub enum ResponseInputItem {
     },
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        output: FunctionCallOutputPayload,
     },
 }
 
@@ -68,6 +190,31 @@ pub enum ContentItem {
     OutputText { text: String },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageDetail {
+    Auto,
+    Low,
+    High,
+    Original,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+/// Classifies an assistant message as interim commentary or final answer text.
+///
+/// Providers do not emit this consistently, so callers must treat `None` as
+/// "phase unknown" and keep compatibility behavior for legacy models.
+pub enum MessagePhase {
+    /// Mid-turn assistant text (for example preamble/progress narration).
+    ///
+    /// Additional tool calls or assistant output may follow before turn
+    /// completion.
+    Commentary,
+    /// The assistant's terminal answer text for the current turn.
+    FinalAnswer,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
@@ -77,6 +224,16 @@ pub enum ResponseItem {
         id: Option<String>,
         role: String,
         content: Vec<ContentItem>,
+        // Do not use directly, no available consistently across all providers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        end_turn: Option<bool>,
+        // Optional output-message phase (for example: "commentary", "final_answer").
+        // Availability varies by provider/model, so downstream consumers must
+        // preserve fallback behavior when this is absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        phase: Option<MessagePhase>,
     },
     Reasoning {
         #[serde(default, skip_serializing)]
@@ -89,7 +246,7 @@ pub enum ResponseItem {
         encrypted_content: Option<String>,
     },
     LocalShellCall {
-        /// Set when using the chat completions API.
+        /// Legacy id field retained for compatibility with older payloads.
         #[serde(default, skip_serializing)]
         #[ts(skip)]
         id: Option<String>,
@@ -105,16 +262,15 @@ pub enum ResponseItem {
         name: String,
         // The Responses API returns the function call arguments as a *string* that contains
         // JSON, not as an already‑parsed object. We keep it as a raw string here and let
-        // Session::handle_function_call parse it into a Value. This exactly matches the
-        // Chat Completions + Responses API behavior.
+        // Session::handle_function_call parse it into a Value.
         arguments: String,
         call_id: String,
     },
-    // NOTE: The input schema for `function_call_output` objects that clients send to the
-    // OpenAI /v1/responses endpoint is NOT the same shape as the objects the server returns on the
-    // SSE stream. When *sending* we must wrap the string output inside an object that includes a
-    // required `success` boolean. To ensure we serialize exactly the expected shape we introduce
-    // a dedicated payload struct and flatten it here.
+    // NOTE: The `output` field for `function_call_output` uses a dedicated payload type with
+    // custom serialization. On the wire it is either:
+    //   - a plain string (`content`)
+    //   - an array of structured content items (`content_items`)
+    // We keep this behavior centralized in `FunctionCallOutputPayload`.
     FunctionCallOutput {
         call_id: String,
         output: FunctionCallOutputPayload,
@@ -131,9 +287,12 @@ pub enum ResponseItem {
         name: String,
         input: String,
     },
+    // `custom_tool_call_output.output` uses the same wire encoding as
+    // `function_call_output.output` so freeform tools can return either plain
+    // text or structured content items.
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        output: FunctionCallOutputPayload,
     },
     // Emitted by the Responses API when the agent triggers a web search.
     // Example payload (from SSE `response.output_item.done`):
@@ -150,7 +309,26 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         status: Option<String>,
-        action: WebSearchAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        action: Option<WebSearchAction>,
+    },
+    // Emitted by the Responses API when the agent triggers image generation.
+    // Example payload:
+    // {
+    //   "id":"ig_123",
+    //   "type":"image_generation_call",
+    //   "status":"completed",
+    //   "revised_prompt":"A gray tabby cat hugging an otter...",
+    //   "result":"..."
+    // }
+    ImageGenerationCall {
+        id: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        revised_prompt: Option<String>,
+        result: String,
     },
     // Generated by the harness but considered exactly as a model response.
     GhostSnapshot {
@@ -162,6 +340,23 @@ pub enum ResponseItem {
     },
     #[serde(other)]
     Other,
+}
+
+pub const BASE_INSTRUCTIONS_DEFAULT: &str = include_str!("prompts/base_instructions/default.md");
+
+/// Base instructions for the model in a thread. Corresponds to the `instructions` field in the ResponsesAPI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+#[serde(rename = "base_instructions", rename_all = "snake_case")]
+pub struct BaseInstructions {
+    pub text: String,
+}
+
+impl Default for BaseInstructions {
+    fn default() -> Self {
+        Self {
+            text: BASE_INSTRUCTIONS_DEFAULT.to_string(),
+        }
+    }
 }
 
 /// Developer-provided guidance that is injected into a turn as a developer role
@@ -177,8 +372,10 @@ const APPROVAL_POLICY_UNLESS_TRUSTED: &str =
     include_str!("prompts/permissions/approval_policy/unless_trusted.md");
 const APPROVAL_POLICY_ON_FAILURE: &str =
     include_str!("prompts/permissions/approval_policy/on_failure.md");
-const APPROVAL_POLICY_ON_REQUEST: &str =
-    include_str!("prompts/permissions/approval_policy/on_request.md");
+const APPROVAL_POLICY_ON_REQUEST_RULE: &str =
+    include_str!("prompts/permissions/approval_policy/on_request_rule.md");
+const APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION: &str =
+    include_str!("prompts/permissions/approval_policy/on_request_rule_request_permission.md");
 
 const SANDBOX_MODE_DANGER_FULL_ACCESS: &str =
     include_str!("prompts/permissions/sandbox_mode/danger_full_access.md");
@@ -186,9 +383,57 @@ const SANDBOX_MODE_WORKSPACE_WRITE: &str =
     include_str!("prompts/permissions/sandbox_mode/workspace_write.md");
 const SANDBOX_MODE_READ_ONLY: &str = include_str!("prompts/permissions/sandbox_mode/read_only.md");
 
+const REALTIME_START_INSTRUCTIONS: &str = include_str!("prompts/realtime/realtime_start.md");
+const REALTIME_END_INSTRUCTIONS: &str = include_str!("prompts/realtime/realtime_end.md");
+
 impl DeveloperInstructions {
     pub fn new<T: Into<String>>(text: T) -> Self {
         Self { text: text.into() }
+    }
+
+    pub fn from(
+        approval_policy: AskForApproval,
+        exec_policy: &Policy,
+        request_permission_enabled: bool,
+    ) -> DeveloperInstructions {
+        let on_request_instructions = || {
+            let on_request_rule = if request_permission_enabled {
+                APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION
+            } else {
+                APPROVAL_POLICY_ON_REQUEST_RULE
+            };
+            let command_prefixes = format_allow_prefixes(exec_policy.get_allowed_prefixes());
+            match command_prefixes {
+                Some(prefixes) => {
+                    format!(
+                        "{on_request_rule}\n## Approved command prefixes\nThe following prefix rules have already been approved: {prefixes}"
+                    )
+                }
+                None => on_request_rule.to_string(),
+            }
+        };
+        let text = match approval_policy {
+            AskForApproval::Never => APPROVAL_POLICY_NEVER.to_string(),
+            AskForApproval::UnlessTrusted => APPROVAL_POLICY_UNLESS_TRUSTED.to_string(),
+            AskForApproval::OnFailure => APPROVAL_POLICY_ON_FAILURE.to_string(),
+            AskForApproval::OnRequest => on_request_instructions(),
+            AskForApproval::Reject(reject_config) => {
+                let on_request_instructions = on_request_instructions();
+                let sandbox_approval = reject_config.sandbox_approval;
+                let rules = reject_config.rules;
+                let mcp_elicitations = reject_config.mcp_elicitations;
+                format!(
+                    "{on_request_instructions}\n\n\
+                     Approval policy is `reject`.\n\
+                     - `sandbox_approval`: {sandbox_approval}\n\
+                     - `rules`: {rules}\n\
+                     - `mcp_elicitations`: {mcp_elicitations}\n\
+                     When a category is `true`, requests in that category are auto-rejected instead of prompting the user."
+                )
+            }
+        };
+
+        DeveloperInstructions::new(text)
     }
 
     pub fn into_text(self) -> String {
@@ -197,14 +442,46 @@ impl DeveloperInstructions {
 
     pub fn concat(self, other: impl Into<DeveloperInstructions>) -> Self {
         let mut text = self.text;
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
         text.push_str(&other.into().text);
         Self { text }
+    }
+
+    pub fn model_switch_message(model_instructions: String) -> Self {
+        DeveloperInstructions::new(format!(
+            "<model_switch>\nThe user was previously using a different model. Please continue the conversation according to the following instructions:\n\n{model_instructions}\n</model_switch>"
+        ))
+    }
+
+    pub fn realtime_start_message() -> Self {
+        DeveloperInstructions::new(format!(
+            "{REALTIME_CONVERSATION_OPEN_TAG}\n{}\n{REALTIME_CONVERSATION_CLOSE_TAG}",
+            REALTIME_START_INSTRUCTIONS.trim()
+        ))
+    }
+
+    pub fn realtime_end_message(reason: &str) -> Self {
+        DeveloperInstructions::new(format!(
+            "{REALTIME_CONVERSATION_OPEN_TAG}\n{}\n\nReason: {reason}\n{REALTIME_CONVERSATION_CLOSE_TAG}",
+            REALTIME_END_INSTRUCTIONS.trim()
+        ))
+    }
+
+    pub fn personality_spec_message(spec: String) -> Self {
+        let message = format!(
+            "<personality_spec> The user has requested a new communication style. Future messages should adhere to the following personality: \n{spec} </personality_spec>"
+        );
+        DeveloperInstructions::new(message)
     }
 
     pub fn from_policy(
         sandbox_policy: &SandboxPolicy,
         approval_policy: AskForApproval,
+        exec_policy: &Policy,
         cwd: &Path,
+        request_permission_enabled: bool,
     ) -> Self {
         let network_access = if sandbox_policy.has_full_network_access() {
             NetworkAccess::Enabled
@@ -214,7 +491,7 @@ impl DeveloperInstructions {
 
         let (sandbox_mode, writable_roots) = match sandbox_policy {
             SandboxPolicy::DangerFullAccess => (SandboxMode::DangerFullAccess, None),
-            SandboxPolicy::ReadOnly => (SandboxMode::ReadOnly, None),
+            SandboxPolicy::ReadOnly { .. } => (SandboxMode::ReadOnly, None),
             SandboxPolicy::ExternalSandbox { .. } => (SandboxMode::DangerFullAccess, None),
             SandboxPolicy::WorkspaceWrite { .. } => {
                 let roots = sandbox_policy.get_writable_roots_with_cwd(cwd);
@@ -226,15 +503,33 @@ impl DeveloperInstructions {
             sandbox_mode,
             network_access,
             approval_policy,
+            exec_policy,
             writable_roots,
+            request_permission_enabled,
         )
+    }
+
+    /// Returns developer instructions from a collaboration mode if they exist and are non-empty.
+    pub fn from_collaboration_mode(collaboration_mode: &CollaborationMode) -> Option<Self> {
+        collaboration_mode
+            .settings
+            .developer_instructions
+            .as_ref()
+            .filter(|instructions| !instructions.is_empty())
+            .map(|instructions| {
+                DeveloperInstructions::new(format!(
+                    "{COLLABORATION_MODE_OPEN_TAG}{instructions}{COLLABORATION_MODE_CLOSE_TAG}"
+                ))
+            })
     }
 
     fn from_permissions_with_network(
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
         approval_policy: AskForApproval,
+        exec_policy: &Policy,
         writable_roots: Option<Vec<WritableRoot>>,
+        request_permission_enabled: bool,
     ) -> Self {
         let start_tag = DeveloperInstructions::new("<permissions instructions>");
         let end_tag = DeveloperInstructions::new("</permissions instructions>");
@@ -243,7 +538,11 @@ impl DeveloperInstructions {
                 sandbox_mode,
                 network_access,
             ))
-            .concat(DeveloperInstructions::from(approval_policy))
+            .concat(DeveloperInstructions::from(
+                approval_policy,
+                exec_policy,
+                request_permission_enabled,
+            ))
             .concat(DeveloperInstructions::from_writable_roots(writable_roots))
             .concat(end_tag)
     }
@@ -281,6 +580,62 @@ impl DeveloperInstructions {
     }
 }
 
+const MAX_RENDERED_PREFIXES: usize = 100;
+const MAX_ALLOW_PREFIX_TEXT_BYTES: usize = 5000;
+const TRUNCATED_MARKER: &str = "...\n[Some commands were truncated]";
+
+pub fn format_allow_prefixes(prefixes: Vec<Vec<String>>) -> Option<String> {
+    let mut truncated = false;
+    if prefixes.len() > MAX_RENDERED_PREFIXES {
+        truncated = true;
+    }
+
+    let mut prefixes = prefixes;
+    prefixes.sort_by(|a, b| {
+        a.len()
+            .cmp(&b.len())
+            .then_with(|| prefix_combined_str_len(a).cmp(&prefix_combined_str_len(b)))
+            .then_with(|| a.cmp(b))
+    });
+
+    let full_text = prefixes
+        .into_iter()
+        .take(MAX_RENDERED_PREFIXES)
+        .map(|prefix| format!("- {}", render_command_prefix(&prefix)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // truncate to last UTF8 char
+    let mut output = full_text;
+    let byte_idx = output
+        .char_indices()
+        .nth(MAX_ALLOW_PREFIX_TEXT_BYTES)
+        .map(|(i, _)| i);
+    if let Some(byte_idx) = byte_idx {
+        truncated = true;
+        output = output[..byte_idx].to_string();
+    }
+
+    if truncated {
+        Some(format!("{output}{TRUNCATED_MARKER}"))
+    } else {
+        Some(output)
+    }
+}
+
+fn prefix_combined_str_len(prefix: &[String]) -> usize {
+    prefix.iter().map(String::len).sum()
+}
+
+fn render_command_prefix(prefix: &[String]) -> String {
+    let tokens = prefix
+        .iter()
+        .map(|token| serde_json::to_string(token).unwrap_or_else(|_| format!("{token:?}")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{tokens}]")
+}
+
 impl From<DeveloperInstructions> for ResponseItem {
     fn from(di: DeveloperInstructions) -> Self {
         ResponseItem::Message {
@@ -289,6 +644,8 @@ impl From<DeveloperInstructions> for ResponseItem {
             content: vec![ContentItem::InputText {
                 text: di.into_text(),
             }],
+            end_turn: None,
+            phase: None,
         }
     }
 }
@@ -301,19 +658,6 @@ impl From<SandboxMode> for DeveloperInstructions {
         };
 
         DeveloperInstructions::sandbox_text(mode, network_access)
-    }
-}
-
-impl From<AskForApproval> for DeveloperInstructions {
-    fn from(mode: AskForApproval) -> Self {
-        let text = match mode {
-            AskForApproval::Never => APPROVAL_POLICY_NEVER.trim_end(),
-            AskForApproval::UnlessTrusted => APPROVAL_POLICY_UNLESS_TRUSTED.trim_end(),
-            AskForApproval::OnFailure => APPROVAL_POLICY_ON_FAILURE.trim_end(),
-            AskForApproval::OnRequest => APPROVAL_POLICY_ON_REQUEST.trim_end(),
-        };
-
-        DeveloperInstructions::new(text)
     }
 }
 
@@ -407,8 +751,9 @@ fn unsupported_image_error_placeholder(path: &std::path::Path, mime: &str) -> Co
 pub fn local_image_content_items_with_label_number(
     path: &std::path::Path,
     label_number: Option<usize>,
+    mode: PromptImageMode,
 ) -> Vec<ContentItem> {
-    match load_and_resize_to_fit(path) {
+    match load_for_prompt(path, mode) {
         Ok(image) => {
             let mut items = Vec::with_capacity(3);
             if let Some(label_number) = label_number {
@@ -458,6 +803,8 @@ impl From<ResponseInputItem> for ResponseItem {
                 role,
                 content,
                 id: None,
+                end_turn: None,
+                phase: None,
             },
             ResponseInputItem::FunctionCallOutput { call_id, output } => {
                 Self::FunctionCallOutput { call_id, output }
@@ -466,9 +813,8 @@ impl From<ResponseInputItem> for ResponseItem {
                 let output = match result {
                     Ok(result) => FunctionCallOutputPayload::from(&result),
                     Err(tool_call_err) => FunctionCallOutputPayload {
-                        content: format!("err: {tool_call_err:?}"),
+                        body: FunctionCallOutputBody::Text(format!("err: {tool_call_err:?}")),
                         success: Some(false),
-                        ..Default::default()
                     },
                 };
                 Self::FunctionCallOutput { call_id, output }
@@ -510,6 +856,9 @@ pub enum WebSearchAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        queries: Option<Vec<String>>,
     },
     OpenPage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -550,21 +899,28 @@ impl From<Vec<UserInput>> for ResponseInputItem {
             content: items
                 .into_iter()
                 .flat_map(|c| match c {
-                    UserInput::Text { text } => vec![ContentItem::InputText { text }],
-                    UserInput::Image { image_url } => vec![
-                        ContentItem::InputText {
-                            text: image_open_tag_text(),
-                        },
-                        ContentItem::InputImage { image_url },
-                        ContentItem::InputText {
-                            text: image_close_tag_text(),
-                        },
-                    ],
+                    UserInput::Text { text, .. } => vec![ContentItem::InputText { text }],
+                    UserInput::Image { image_url } => {
+                        image_index += 1;
+                        vec![
+                            ContentItem::InputText {
+                                text: image_open_tag_text(),
+                            },
+                            ContentItem::InputImage { image_url },
+                            ContentItem::InputText {
+                                text: image_close_tag_text(),
+                            },
+                        ]
+                    }
                     UserInput::LocalImage { path } => {
                         image_index += 1;
-                        local_image_content_items_with_label_number(&path, Some(image_index))
+                        local_image_content_items_with_label_number(
+                            &path,
+                            Some(image_index),
+                            PromptImageMode::ResizeToFit,
+                        )
                     }
-                    UserInput::Skill { .. } => Vec::new(), // Skill bodies are injected later in core
+                    UserInput::Skill { .. } | UserInput::Mention { .. } => Vec::new(), // Tool bodies are injected later in core
                 })
                 .collect::<Vec<ContentItem>>(),
         }
@@ -584,6 +940,13 @@ pub struct ShellToolCallParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sandbox_permissions: Option<SandboxPermissions>,
+    /// Suggests a command prefix to persist for future sessions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prefix_rule: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub additional_permissions: Option<PermissionProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
 }
@@ -604,6 +967,12 @@ pub struct ShellCommandToolCallParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sandbox_permissions: Option<SandboxPermissions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prefix_rule: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub additional_permissions: Option<PermissionProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
 }
@@ -614,45 +983,161 @@ pub struct ShellCommandToolCallParams {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FunctionCallOutputContentItem {
     // Do not rename, these are serialized and used directly in the responses API.
-    InputText { text: String },
+    InputText {
+        text: String,
+    },
     // Do not rename, these are serialized and used directly in the responses API.
-    InputImage { image_url: String },
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        detail: Option<ImageDetail>,
+    },
+}
+
+/// Converts structured function-call output content into plain text for
+/// human-readable surfaces.
+///
+/// This conversion is intentionally lossy:
+/// - only `input_text` items are included
+/// - image items are ignored
+///
+/// We use this helper where callers still need a string representation (for
+/// example telemetry previews or legacy string-only output paths) while keeping
+/// the original multimodal `content_items` as the authoritative payload sent to
+/// the model.
+pub fn function_call_output_content_items_to_text(
+    content_items: &[FunctionCallOutputContentItem],
+) -> Option<String> {
+    let text_segments = content_items
+        .iter()
+        .filter_map(|item| match item {
+            FunctionCallOutputContentItem::InputText { text } if !text.trim().is_empty() => {
+                Some(text.as_str())
+            }
+            FunctionCallOutputContentItem::InputText { .. }
+            | FunctionCallOutputContentItem::InputImage { .. } => None,
+        })
+        .collect::<Vec<_>>();
+
+    if text_segments.is_empty() {
+        None
+    } else {
+        Some(text_segments.join("\n"))
+    }
+}
+
+impl From<crate::dynamic_tools::DynamicToolCallOutputContentItem>
+    for FunctionCallOutputContentItem
+{
+    fn from(item: crate::dynamic_tools::DynamicToolCallOutputContentItem) -> Self {
+        match item {
+            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
+                Self::InputText { text }
+            }
+            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage { image_url } => {
+                Self::InputImage {
+                    image_url,
+                    detail: None,
+                }
+            }
+        }
+    }
 }
 
 /// The payload we send back to OpenAI when reporting a tool call result.
 ///
-/// `content` preserves the historical plain-string payload so downstream
-/// integrations (tests, logging, etc.) can keep treating tool output as
-/// `String`. When an MCP server returns richer data we additionally populate
-/// `content_items` with the structured form that the Responses/Chat
-/// Completions APIs understand.
+/// `body` serializes directly as the wire value for `function_call_output.output`.
+/// `success` remains internal metadata for downstream handling.
 #[derive(Debug, Default, Clone, PartialEq, JsonSchema, TS)]
 pub struct FunctionCallOutputPayload {
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_items: Option<Vec<FunctionCallOutputContentItem>>,
+    pub body: FunctionCallOutputBody,
     pub success: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(untagged)]
-enum FunctionCallOutputPayloadSerde {
+pub enum FunctionCallOutputBody {
     Text(String),
-    Items(Vec<FunctionCallOutputContentItem>),
+    ContentItems(Vec<FunctionCallOutputContentItem>),
 }
 
-// The Responses API expects two *different* shapes depending on success vs failure:
-//   • success → output is a plain string (no nested object)
-//   • failure → output is an object { content, success:false }
+impl FunctionCallOutputBody {
+    /// Best-effort conversion of a function-call output body to plain text for
+    /// human-readable surfaces.
+    ///
+    /// This conversion is intentionally lossy when the body contains content
+    /// items: image entries are dropped and text entries are joined with
+    /// newlines.
+    pub fn to_text(&self) -> Option<String> {
+        match self {
+            Self::Text(content) => Some(content.clone()),
+            Self::ContentItems(items) => function_call_output_content_items_to_text(items),
+        }
+    }
+}
+
+impl Default for FunctionCallOutputBody {
+    fn default() -> Self {
+        Self::Text(String::new())
+    }
+}
+
+impl FunctionCallOutputPayload {
+    pub fn from_text(content: String) -> Self {
+        Self {
+            body: FunctionCallOutputBody::Text(content),
+            success: None,
+        }
+    }
+
+    pub fn from_content_items(content_items: Vec<FunctionCallOutputContentItem>) -> Self {
+        Self {
+            body: FunctionCallOutputBody::ContentItems(content_items),
+            success: None,
+        }
+    }
+
+    pub fn text_content(&self) -> Option<&str> {
+        match &self.body {
+            FunctionCallOutputBody::Text(content) => Some(content),
+            FunctionCallOutputBody::ContentItems(_) => None,
+        }
+    }
+
+    pub fn text_content_mut(&mut self) -> Option<&mut String> {
+        match &mut self.body {
+            FunctionCallOutputBody::Text(content) => Some(content),
+            FunctionCallOutputBody::ContentItems(_) => None,
+        }
+    }
+
+    pub fn content_items(&self) -> Option<&[FunctionCallOutputContentItem]> {
+        match &self.body {
+            FunctionCallOutputBody::Text(_) => None,
+            FunctionCallOutputBody::ContentItems(items) => Some(items),
+        }
+    }
+
+    pub fn content_items_mut(&mut self) -> Option<&mut Vec<FunctionCallOutputContentItem>> {
+        match &mut self.body {
+            FunctionCallOutputBody::Text(_) => None,
+            FunctionCallOutputBody::ContentItems(items) => Some(items),
+        }
+    }
+}
+
+// `function_call_output.output` is encoded as either:
+//   - an array of structured content items
+//   - a plain string
 impl Serialize for FunctionCallOutputPayload {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        if let Some(items) = &self.content_items {
-            items.serialize(serializer)
-        } else {
-            serializer.serialize_str(&self.content)
+        match &self.body {
+            FunctionCallOutputBody::Text(content) => serializer.serialize_str(content),
+            FunctionCallOutputBody::ContentItems(items) => items.serialize(serializer),
         }
     }
 }
@@ -662,20 +1147,11 @@ impl<'de> Deserialize<'de> for FunctionCallOutputPayload {
     where
         D: Deserializer<'de>,
     {
-        match FunctionCallOutputPayloadSerde::deserialize(deserializer)? {
-            FunctionCallOutputPayloadSerde::Text(content) => Ok(FunctionCallOutputPayload {
-                content,
-                ..Default::default()
-            }),
-            FunctionCallOutputPayloadSerde::Items(items) => {
-                let content = serde_json::to_string(&items).map_err(serde::de::Error::custom)?;
-                Ok(FunctionCallOutputPayload {
-                    content,
-                    content_items: Some(items),
-                    success: None,
-                })
-            }
-        }
+        let body = FunctionCallOutputBody::deserialize(deserializer)?;
+        Ok(FunctionCallOutputPayload {
+            body,
+            success: None,
+        })
     }
 }
 
@@ -685,6 +1161,7 @@ impl From<&CallToolResult> for FunctionCallOutputPayload {
             content,
             structured_content,
             is_error,
+            meta: _,
         } = call_tool_result;
 
         let is_success = is_error != &Some(true);
@@ -695,16 +1172,14 @@ impl From<&CallToolResult> for FunctionCallOutputPayload {
             match serde_json::to_string(structured_content) {
                 Ok(serialized_structured_content) => {
                     return FunctionCallOutputPayload {
-                        content: serialized_structured_content,
+                        body: FunctionCallOutputBody::Text(serialized_structured_content),
                         success: Some(is_success),
-                        ..Default::default()
                     };
                 }
                 Err(err) => {
                     return FunctionCallOutputPayload {
-                        content: err.to_string(),
+                        body: FunctionCallOutputBody::Text(err.to_string()),
                         success: Some(false),
-                        ..Default::default()
                     };
                 }
             }
@@ -714,68 +1189,86 @@ impl From<&CallToolResult> for FunctionCallOutputPayload {
             Ok(serialized_content) => serialized_content,
             Err(err) => {
                 return FunctionCallOutputPayload {
-                    content: err.to_string(),
+                    body: FunctionCallOutputBody::Text(err.to_string()),
                     success: Some(false),
-                    ..Default::default()
                 };
             }
         };
 
-        let content_items = convert_content_blocks_to_items(content);
+        let content_items = convert_mcp_content_to_items(content);
+
+        let body = match content_items {
+            Some(content_items) => FunctionCallOutputBody::ContentItems(content_items),
+            None => FunctionCallOutputBody::Text(serialized_content),
+        };
 
         FunctionCallOutputPayload {
-            content: serialized_content,
-            content_items,
+            body,
             success: Some(is_success),
         }
     }
 }
 
-fn convert_content_blocks_to_items(
-    blocks: &[ContentBlock],
+fn convert_mcp_content_to_items(
+    contents: &[serde_json::Value],
 ) -> Option<Vec<FunctionCallOutputContentItem>> {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type")]
+    enum McpContent {
+        #[serde(rename = "text")]
+        Text { text: String },
+        #[serde(rename = "image")]
+        Image {
+            data: String,
+            #[serde(rename = "mimeType", alias = "mime_type")]
+            mime_type: Option<String>,
+        },
+        #[serde(other)]
+        Unknown,
+    }
+
     let mut saw_image = false;
-    let mut items = Vec::with_capacity(blocks.len());
-    tracing::warn!("Blocks: {:?}", blocks);
-    for block in blocks {
-        match block {
-            ContentBlock::TextContent(text) => {
-                items.push(FunctionCallOutputContentItem::InputText {
-                    text: text.text.clone(),
-                });
-            }
-            ContentBlock::ImageContent(image) => {
+    let mut items = Vec::with_capacity(contents.len());
+
+    for content in contents {
+        let item = match serde_json::from_value::<McpContent>(content.clone()) {
+            Ok(McpContent::Text { text }) => FunctionCallOutputContentItem::InputText { text },
+            Ok(McpContent::Image { data, mime_type }) => {
                 saw_image = true;
-                // Just in case the content doesn't include a data URL, add it.
-                let image_url = if image.data.starts_with("data:") {
-                    image.data.clone()
+                let image_url = if data.starts_with("data:") {
+                    data
                 } else {
-                    format!("data:{};base64,{}", image.mime_type, image.data)
+                    let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".into());
+                    format!("data:{mime_type};base64,{data}")
                 };
-                items.push(FunctionCallOutputContentItem::InputImage { image_url });
+                FunctionCallOutputContentItem::InputImage {
+                    image_url,
+                    detail: None,
+                }
             }
-            // TODO: render audio, resource, and embedded resource content to the model.
-            _ => return None,
-        }
+            Ok(McpContent::Unknown) | Err(_) => FunctionCallOutputContentItem::InputText {
+                text: serde_json::to_string(content).unwrap_or_else(|_| "<content>".to_string()),
+            },
+        };
+        items.push(item);
     }
 
     if saw_image { Some(items) } else { None }
 }
 
 // Implement Display so callers can treat the payload like a plain string when logging or doing
-// trivial substring checks in tests (existing tests call `.contains()` on the output). Display
-// returns the raw `content` field.
+// trivial substring checks in tests (existing tests call `.contains()` on the output). For
+// `ContentItems`, Display emits a JSON representation.
 
 impl std::fmt::Display for FunctionCallOutputPayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.content)
-    }
-}
-
-impl std::ops::Deref for FunctionCallOutputPayload {
-    type Target = str;
-    fn deref(&self) -> &Self::Target {
-        &self.content
+        match &self.body {
+            FunctionCallOutputBody::Text(content) => f.write_str(content),
+            FunctionCallOutputBody::ContentItems(items) => {
+                let content = serde_json::to_string(items).unwrap_or_default();
+                f.write_str(content.as_str())
+            }
+        }
     }
 }
 
@@ -787,23 +1280,171 @@ mod tests {
     use crate::config_types::SandboxMode;
     use crate::protocol::AskForApproval;
     use anyhow::Result;
-    use mcp_types::ImageContent;
-    use mcp_types::TextContent;
+    use codex_execpolicy::Policy;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
     #[test]
-    fn converts_sandbox_mode_into_developer_instructions() {
+    fn convert_mcp_content_to_items_preserves_data_urls() {
+        let contents = vec![serde_json::json!({
+            "type": "image",
+            "data": "data:image/png;base64,Zm9v",
+            "mimeType": "image/png",
+        })];
+
+        let items = convert_mcp_content_to_items(&contents).expect("expected image items");
         assert_eq!(
-            DeveloperInstructions::from(SandboxMode::WorkspaceWrite),
+            items,
+            vec![FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,Zm9v".to_string(),
+                detail: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn response_item_parses_image_generation_call() {
+        let item = serde_json::from_value::<ResponseItem>(serde_json::json!({
+            "id": "ig_123",
+            "type": "image_generation_call",
+            "status": "completed",
+            "revised_prompt": "A small blue square",
+            "result": "Zm9v",
+        }))
+        .expect("image generation item should deserialize");
+
+        assert_eq!(
+            item,
+            ResponseItem::ImageGenerationCall {
+                id: "ig_123".to_string(),
+                status: "completed".to_string(),
+                revised_prompt: Some("A small blue square".to_string()),
+                result: "Zm9v".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn response_item_parses_image_generation_call_without_revised_prompt() {
+        let item = serde_json::from_value::<ResponseItem>(serde_json::json!({
+            "id": "ig_123",
+            "type": "image_generation_call",
+            "status": "completed",
+            "result": "Zm9v",
+        }))
+        .expect("image generation item should deserialize");
+
+        assert_eq!(
+            item,
+            ResponseItem::ImageGenerationCall {
+                id: "ig_123".to_string(),
+                status: "completed".to_string(),
+                revised_prompt: None,
+                result: "Zm9v".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn convert_mcp_content_to_items_builds_data_urls_when_missing_prefix() {
+        let contents = vec![serde_json::json!({
+            "type": "image",
+            "data": "Zm9v",
+            "mimeType": "image/png",
+        })];
+
+        let items = convert_mcp_content_to_items(&contents).expect("expected image items");
+        assert_eq!(
+            items,
+            vec![FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,Zm9v".to_string(),
+                detail: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn convert_mcp_content_to_items_returns_none_without_images() {
+        let contents = vec![serde_json::json!({
+            "type": "text",
+            "text": "hello",
+        })];
+
+        assert_eq!(convert_mcp_content_to_items(&contents), None);
+    }
+
+    #[test]
+    fn function_call_output_content_items_to_text_joins_text_segments() {
+        let content_items = vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "line 1".to_string(),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
+            },
+            FunctionCallOutputContentItem::InputText {
+                text: "line 2".to_string(),
+            },
+        ];
+
+        let text = function_call_output_content_items_to_text(&content_items);
+        assert_eq!(text, Some("line 1\nline 2".to_string()));
+    }
+
+    #[test]
+    fn function_call_output_content_items_to_text_ignores_blank_text_and_images() {
+        let content_items = vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "   ".to_string(),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
+            },
+        ];
+
+        let text = function_call_output_content_items_to_text(&content_items);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn function_call_output_body_to_text_returns_plain_text_content() {
+        let body = FunctionCallOutputBody::Text("ok".to_string());
+        let text = body.to_text();
+        assert_eq!(text, Some("ok".to_string()));
+    }
+
+    #[test]
+    fn function_call_output_body_to_text_uses_content_item_fallback() {
+        let body = FunctionCallOutputBody::ContentItems(vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "line 1".to_string(),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
+            },
+        ]);
+
+        let text = body.to_text();
+        assert_eq!(text, Some("line 1".to_string()));
+    }
+
+    #[test]
+    fn converts_sandbox_mode_into_developer_instructions() {
+        let workspace_write: DeveloperInstructions = SandboxMode::WorkspaceWrite.into();
+        assert_eq!(
+            workspace_write,
             DeveloperInstructions::new(
                 "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `workspace-write`: The sandbox permits reading files, and editing files in `cwd` and `writable_roots`. Editing files in other directories requires approval. Network access is restricted."
             )
         );
 
+        let read_only: DeveloperInstructions = SandboxMode::ReadOnly.into();
         assert_eq!(
-            DeveloperInstructions::from(SandboxMode::ReadOnly),
+            read_only,
             DeveloperInstructions::new(
                 "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files. Network access is restricted."
             )
@@ -816,7 +1457,9 @@ mod tests {
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Enabled,
             AskForApproval::OnRequest,
+            &Policy::empty(),
             None,
+            false,
         );
 
         let text = instructions.into_text();
@@ -825,7 +1468,7 @@ mod tests {
             "expected network access to be enabled in message"
         );
         assert!(
-            text.contains("`approval_policy` is `on-request`"),
+            text.contains("How to request escalation"),
             "expected approval guidance to be included"
         );
     }
@@ -834,6 +1477,7 @@ mod tests {
     fn builds_permissions_from_policy() {
         let policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![],
+            read_only_access: Default::default(),
             network_access: true,
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
@@ -842,7 +1486,9 @@ mod tests {
         let instructions = DeveloperInstructions::from_policy(
             &policy,
             AskForApproval::UnlessTrusted,
+            &Policy::empty(),
             &PathBuf::from("/tmp"),
+            false,
         );
         let text = instructions.into_text();
         assert!(text.contains("Network access is enabled."));
@@ -850,13 +1496,106 @@ mod tests {
     }
 
     #[test]
+    fn includes_request_rule_instructions_for_on_request() {
+        let mut exec_policy = Policy::empty();
+        exec_policy
+            .add_prefix_rule(
+                &["git".to_string(), "pull".to_string()],
+                codex_execpolicy::Decision::Allow,
+            )
+            .expect("add rule");
+        let instructions = DeveloperInstructions::from_permissions_with_network(
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Enabled,
+            AskForApproval::OnRequest,
+            &exec_policy,
+            None,
+            false,
+        );
+
+        let text = instructions.into_text();
+        assert!(text.contains("prefix_rule"));
+        assert!(text.contains("Approved command prefixes"));
+        assert!(text.contains(r#"["git", "pull"]"#));
+    }
+
+    #[test]
+    fn includes_request_permission_rule_instructions_for_on_request_when_enabled() {
+        let instructions = DeveloperInstructions::from_permissions_with_network(
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Enabled,
+            AskForApproval::OnRequest,
+            &Policy::empty(),
+            None,
+            true,
+        );
+
+        let text = instructions.into_text();
+        assert!(text.contains("with_additional_permissions"));
+        assert!(text.contains("additional_permissions"));
+    }
+
+    #[test]
+    fn render_command_prefix_list_sorts_by_len_then_total_len_then_alphabetical() {
+        let prefixes = vec![
+            vec!["b".to_string(), "zz".to_string()],
+            vec!["aa".to_string()],
+            vec!["b".to_string()],
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["a".to_string()],
+            vec!["b".to_string(), "a".to_string()],
+        ];
+
+        let output = format_allow_prefixes(prefixes).expect("rendered list");
+        assert_eq!(
+            output,
+            r#"- ["a"]
+- ["b"]
+- ["aa"]
+- ["b", "a"]
+- ["b", "zz"]
+- ["a", "b", "c"]"#
+                .to_string(),
+        );
+    }
+
+    #[test]
+    fn render_command_prefix_list_limits_output_to_max_prefixes() {
+        let prefixes = (0..(MAX_RENDERED_PREFIXES + 5))
+            .map(|i| vec![format!("{i:03}")])
+            .collect::<Vec<_>>();
+
+        let output = format_allow_prefixes(prefixes).expect("rendered list");
+        assert_eq!(output.ends_with(TRUNCATED_MARKER), true);
+        eprintln!("output: {output}");
+        assert_eq!(output.lines().count(), MAX_RENDERED_PREFIXES + 1);
+    }
+
+    #[test]
+    fn format_allow_prefixes_limits_output() {
+        let mut exec_policy = Policy::empty();
+        for i in 0..200 {
+            exec_policy
+                .add_prefix_rule(
+                    &[format!("tool-{i:03}"), "x".repeat(500)],
+                    codex_execpolicy::Decision::Allow,
+                )
+                .expect("add rule");
+        }
+
+        let output =
+            format_allow_prefixes(exec_policy.get_allowed_prefixes()).expect("formatted prefixes");
+        assert!(
+            output.len() <= MAX_ALLOW_PREFIX_TEXT_BYTES + TRUNCATED_MARKER.len(),
+            "output length exceeds expected limit: {output}",
+        );
+    }
+
+    #[test]
     fn serializes_success_as_plain_string() -> Result<()> {
         let item = ResponseInputItem::FunctionCallOutput {
             call_id: "call1".into(),
-            output: FunctionCallOutputPayload {
-                content: "ok".into(),
-                ..Default::default()
-            },
+            output: FunctionCallOutputPayload::from_text("ok".into()),
         };
 
         let json = serde_json::to_string(&item)?;
@@ -872,9 +1611,8 @@ mod tests {
         let item = ResponseInputItem::FunctionCallOutput {
             call_id: "call1".into(),
             output: FunctionCallOutputPayload {
-                content: "bad".into(),
+                body: FunctionCallOutputBody::Text("bad".into()),
                 success: Some(false),
-                ..Default::default()
             },
         };
 
@@ -889,25 +1627,20 @@ mod tests {
     fn serializes_image_outputs_as_array() -> Result<()> {
         let call_tool_result = CallToolResult {
             content: vec![
-                ContentBlock::TextContent(TextContent {
-                    annotations: None,
-                    text: "caption".into(),
-                    r#type: "text".into(),
-                }),
-                ContentBlock::ImageContent(ImageContent {
-                    annotations: None,
-                    data: "BASE64".into(),
-                    mime_type: "image/png".into(),
-                    r#type: "image".into(),
-                }),
+                serde_json::json!({"type":"text","text":"caption"}),
+                serde_json::json!({"type":"image","data":"BASE64","mimeType":"image/png"}),
             ],
-            is_error: None,
             structured_content: None,
+            is_error: Some(false),
+            meta: None,
         };
 
         let payload = FunctionCallOutputPayload::from(&call_tool_result);
         assert_eq!(payload.success, Some(true));
-        let items = payload.content_items.clone().expect("content items");
+        let Some(items) = payload.content_items() else {
+            panic!("expected content items");
+        };
+        let items = items.to_vec();
         assert_eq!(
             items,
             vec![
@@ -916,6 +1649,7 @@ mod tests {
                 },
                 FunctionCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,BASE64".into(),
+                    detail: None,
                 },
             ]
         );
@@ -930,6 +1664,56 @@ mod tests {
 
         let output = v.get("output").expect("output field");
         assert!(output.is_array(), "expected array output");
+
+        Ok(())
+    }
+
+    #[test]
+    fn serializes_custom_tool_image_outputs_as_array() -> Result<()> {
+        let item = ResponseInputItem::CustomToolCallOutput {
+            call_id: "call1".into(),
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,BASE64".into(),
+                    detail: None,
+                },
+            ]),
+        };
+
+        let json = serde_json::to_string(&item)?;
+        let v: serde_json::Value = serde_json::from_str(&json)?;
+
+        let output = v.get("output").expect("output field");
+        assert!(output.is_array(), "expected array output");
+
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_existing_image_data_urls() -> Result<()> {
+        let call_tool_result = CallToolResult {
+            content: vec![serde_json::json!({
+                "type": "image",
+                "data": "data:image/png;base64,BASE64",
+                "mimeType": "image/png"
+            })],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+
+        let payload = FunctionCallOutputPayload::from(&call_tool_result);
+        let Some(items) = payload.content_items() else {
+            panic!("expected content items");
+        };
+        let items = items.to_vec();
+        assert_eq!(
+            items,
+            vec![FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,BASE64".into(),
+                detail: None,
+            }]
+        );
 
         Ok(())
     }
@@ -950,12 +1734,17 @@ mod tests {
             },
             FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,XYZ".into(),
+                detail: None,
             },
         ];
-        assert_eq!(payload.content_items, Some(expected_items.clone()));
-
-        let expected_content = serde_json::to_string(&expected_items)?;
-        assert_eq!(payload.content, expected_content);
+        assert_eq!(
+            payload.body,
+            FunctionCallOutputBody::ContentItems(expected_items.clone())
+        );
+        assert_eq!(
+            serde_json::to_string(&payload)?,
+            serde_json::to_string(&expected_items)?
+        );
 
         Ok(())
     }
@@ -984,13 +1773,17 @@ mod tests {
                     "status": "completed",
                     "action": {
                         "type": "search",
-                        "query": "weather seattle"
+                        "query": "weather seattle",
+                        "queries": ["weather seattle", "seattle weather now"]
                     }
                 }"#,
-                WebSearchAction::Search {
+                None,
+                Some(WebSearchAction::Search {
                     query: Some("weather seattle".into()),
-                },
+                    queries: Some(vec!["weather seattle".into(), "seattle weather now".into()]),
+                }),
                 Some("completed".into()),
+                true,
             ),
             (
                 r#"{
@@ -1001,10 +1794,12 @@ mod tests {
                         "url": "https://example.com"
                     }
                 }"#,
-                WebSearchAction::OpenPage {
+                None,
+                Some(WebSearchAction::OpenPage {
                     url: Some("https://example.com".into()),
-                },
+                }),
                 Some("open".into()),
+                true,
             ),
             (
                 r#"{
@@ -1016,26 +1811,43 @@ mod tests {
                         "pattern": "installation"
                     }
                 }"#,
-                WebSearchAction::FindInPage {
+                None,
+                Some(WebSearchAction::FindInPage {
                     url: Some("https://example.com/docs".into()),
                     pattern: Some("installation".into()),
-                },
+                }),
                 Some("in_progress".into()),
+                true,
+            ),
+            (
+                r#"{
+                    "type": "web_search_call",
+                    "status": "in_progress",
+                    "id": "ws_partial"
+                }"#,
+                Some("ws_partial".into()),
+                None,
+                Some("in_progress".into()),
+                false,
             ),
         ];
 
-        for (json_literal, expected_action, expected_status) in cases {
+        for (json_literal, expected_id, expected_action, expected_status, expect_roundtrip) in cases
+        {
             let parsed: ResponseItem = serde_json::from_str(json_literal)?;
             let expected = ResponseItem::WebSearchCall {
-                id: None,
+                id: expected_id.clone(),
                 status: expected_status.clone(),
                 action: expected_action.clone(),
             };
             assert_eq!(parsed, expected);
 
             let serialized = serde_json::to_value(&parsed)?;
-            let original_value: serde_json::Value = serde_json::from_str(json_literal)?;
-            assert_eq!(serialized, original_value);
+            let mut expected_serialized: serde_json::Value = serde_json::from_str(json_literal)?;
+            if !expect_roundtrip && let Some(obj) = expected_serialized.as_object_mut() {
+                obj.remove("id");
+            }
+            assert_eq!(serialized, expected_serialized);
         }
 
         Ok(())
@@ -1056,6 +1868,8 @@ mod tests {
                 workdir: Some("/tmp".to_string()),
                 timeout_ms: Some(1000),
                 sandbox_permissions: None,
+                prefix_rule: None,
+                additional_permissions: None,
                 justification: None,
             },
             params
@@ -1083,6 +1897,65 @@ mod tests {
                     },
                 ];
                 assert_eq!(content, expected);
+            }
+            other => panic!("expected message response but got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_remote_and_local_images_share_label_sequence() -> Result<()> {
+        let image_url = "data:image/png;base64,abc".to_string();
+        let dir = tempdir()?;
+        let local_path = dir.path().join("local.png");
+        // A tiny valid PNG (1x1) so this test doesn't depend on cross-crate file paths, which
+        // break under Bazel sandboxing.
+        const TINY_PNG_BYTES: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2,
+            0, 0, 5, 0, 1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        ];
+        std::fs::write(&local_path, TINY_PNG_BYTES)?;
+
+        let item = ResponseInputItem::from(vec![
+            UserInput::Image {
+                image_url: image_url.clone(),
+            },
+            UserInput::LocalImage { path: local_path },
+        ]);
+
+        match item {
+            ResponseInputItem::Message { content, .. } => {
+                assert_eq!(
+                    content.first(),
+                    Some(&ContentItem::InputText {
+                        text: image_open_tag_text(),
+                    })
+                );
+                assert_eq!(content.get(1), Some(&ContentItem::InputImage { image_url }));
+                assert_eq!(
+                    content.get(2),
+                    Some(&ContentItem::InputText {
+                        text: image_close_tag_text(),
+                    })
+                );
+                assert_eq!(
+                    content.get(3),
+                    Some(&ContentItem::InputText {
+                        text: local_image_open_tag_text(2),
+                    })
+                );
+                assert!(matches!(
+                    content.get(4),
+                    Some(ContentItem::InputImage { .. })
+                ));
+                assert_eq!(
+                    content.get(5),
+                    Some(&ContentItem::InputText {
+                        text: image_close_tag_text(),
+                    })
+                );
             }
             other => panic!("expected message response but got {other:?}"),
         }

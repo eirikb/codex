@@ -3,10 +3,16 @@
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
+use crate::config_loader::RequirementSource;
 pub use codex_protocol::config_types::AltScreenMode;
+pub use codex_protocol::config_types::ModeKind;
+pub use codex_protocol::config_types::Personality;
+pub use codex_protocol::config_types::ServiceTier;
+pub use codex_protocol::config_types::WebSearchMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 use wildmatch::WildMatchPattern;
@@ -18,6 +24,41 @@ use serde::Serialize;
 use serde::de::Error as SerdeError;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
+pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 16;
+pub const DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS: i64 = 30;
+pub const DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS: i64 = 6;
+pub const DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION: usize = 256;
+pub const DEFAULT_MEMORIES_MAX_UNUSED_DAYS: i64 = 30;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsSandboxModeToml {
+    Elevated,
+    Unelevated,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WindowsToml {
+    pub sandbox: Option<WindowsSandboxModeToml>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpServerDisabledReason {
+    Unknown,
+    Requirements { source: RequirementSource },
+}
+
+impl fmt::Display for McpServerDisabledReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            McpServerDisabledReason::Unknown => write!(f, "unknown"),
+            McpServerDisabledReason::Requirements { source } => {
+                write!(f, "requirements ({source})")
+            }
+        }
+    }
+}
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct McpServerConfig {
@@ -27,6 +68,14 @@ pub struct McpServerConfig {
     /// When `false`, Codex skips initializing this MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// When `true`, `codex exec` exits with an error if this MCP server fails to initialize.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+
+    /// Reason this server was disabled after applying requirements.
+    #[serde(skip)]
+    pub disabled_reason: Option<McpServerDisabledReason>,
 
     /// Startup timeout in seconds for initializing MCP server & initially listing tools.
     #[serde(
@@ -47,6 +96,14 @@ pub struct McpServerConfig {
     /// Explicit deny-list of tools. These tools will be removed after applying `enabled_tools`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
+
+    /// Optional OAuth scopes to request during MCP login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+
+    /// Optional OAuth resource parameter to include during MCP login (RFC 8707).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_resource: Option<String>,
 }
 
 // Raw MCP config shape used for deserialization and JSON Schema generation.
@@ -84,9 +141,15 @@ pub(crate) struct RawMcpServerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
+    pub required: Option<bool>,
+    #[serde(default)]
     pub enabled_tools: Option<Vec<String>>,
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
+    #[serde(default)]
+    pub oauth_resource: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for McpServerConfig {
@@ -106,8 +169,11 @@ impl<'de> Deserialize<'de> for McpServerConfig {
         };
         let tool_timeout_sec = raw.tool_timeout_sec;
         let enabled = raw.enabled.unwrap_or_else(default_enabled);
+        let required = raw.required.unwrap_or_default();
         let enabled_tools = raw.enabled_tools.clone();
         let disabled_tools = raw.disabled_tools.clone();
+        let scopes = raw.scopes.clone();
+        let oauth_resource = raw.oauth_resource.clone();
 
         fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
         where
@@ -131,6 +197,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             throw_if_set("stdio", "bearer_token", raw.bearer_token.as_ref())?;
             throw_if_set("stdio", "http_headers", raw.http_headers.as_ref())?;
             throw_if_set("stdio", "env_http_headers", raw.env_http_headers.as_ref())?;
+            throw_if_set("stdio", "oauth_resource", raw.oauth_resource.as_ref())?;
             McpServerTransportConfig::Stdio {
                 command,
                 args: raw.args.clone().unwrap_or_default(),
@@ -159,8 +226,12 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             startup_timeout_sec,
             tool_timeout_sec,
             enabled,
+            required,
+            disabled_reason: None,
             enabled_tools,
             disabled_tools,
+            scopes,
+            oauth_resource,
         })
     }
 }
@@ -297,6 +368,195 @@ pub struct FeedbackConfigToml {
     pub enabled: Option<bool>,
 }
 
+/// Memories settings loaded from config.toml.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MemoriesToml {
+    /// When `true`, web searches and MCP tool calls mark the thread `memory_mode` as `"polluted"`.
+    pub no_memories_if_mcp_or_web_search: Option<bool>,
+    /// When `false`, newly created threads are stored with `memory_mode = "disabled"` in the state DB.
+    pub generate_memories: Option<bool>,
+    /// When `false`, skip injecting memory usage instructions into developer prompts.
+    pub use_memories: Option<bool>,
+    /// Maximum number of recent raw memories retained for global consolidation.
+    pub max_raw_memories_for_consolidation: Option<usize>,
+    /// Maximum number of days since a memory was last used before it becomes ineligible for phase 2 selection.
+    pub max_unused_days: Option<i64>,
+    /// Maximum age of the threads used for memories.
+    pub max_rollout_age_days: Option<i64>,
+    /// Maximum number of rollout candidates processed per pass.
+    pub max_rollouts_per_startup: Option<usize>,
+    /// Minimum idle time between last thread activity and memory creation (hours). > 12h recommended.
+    pub min_rollout_idle_hours: Option<i64>,
+    /// Model used for thread summarisation.
+    pub extract_model: Option<String>,
+    /// Model used for memory consolidation.
+    pub consolidation_model: Option<String>,
+}
+
+/// Effective memories settings after defaults are applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoriesConfig {
+    pub no_memories_if_mcp_or_web_search: bool,
+    pub generate_memories: bool,
+    pub use_memories: bool,
+    pub max_raw_memories_for_consolidation: usize,
+    pub max_unused_days: i64,
+    pub max_rollout_age_days: i64,
+    pub max_rollouts_per_startup: usize,
+    pub min_rollout_idle_hours: i64,
+    pub extract_model: Option<String>,
+    pub consolidation_model: Option<String>,
+}
+
+impl Default for MemoriesConfig {
+    fn default() -> Self {
+        Self {
+            no_memories_if_mcp_or_web_search: false,
+            generate_memories: true,
+            use_memories: true,
+            max_raw_memories_for_consolidation: DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION,
+            max_unused_days: DEFAULT_MEMORIES_MAX_UNUSED_DAYS,
+            max_rollout_age_days: DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS,
+            max_rollouts_per_startup: DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP,
+            min_rollout_idle_hours: DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS,
+            extract_model: None,
+            consolidation_model: None,
+        }
+    }
+}
+
+impl From<MemoriesToml> for MemoriesConfig {
+    fn from(toml: MemoriesToml) -> Self {
+        let defaults = Self::default();
+        Self {
+            no_memories_if_mcp_or_web_search: toml
+                .no_memories_if_mcp_or_web_search
+                .unwrap_or(defaults.no_memories_if_mcp_or_web_search),
+            generate_memories: toml.generate_memories.unwrap_or(defaults.generate_memories),
+            use_memories: toml.use_memories.unwrap_or(defaults.use_memories),
+            max_raw_memories_for_consolidation: toml
+                .max_raw_memories_for_consolidation
+                .unwrap_or(defaults.max_raw_memories_for_consolidation)
+                .min(4096),
+            max_unused_days: toml
+                .max_unused_days
+                .unwrap_or(defaults.max_unused_days)
+                .clamp(0, 365),
+            max_rollout_age_days: toml
+                .max_rollout_age_days
+                .unwrap_or(defaults.max_rollout_age_days)
+                .clamp(0, 90),
+            max_rollouts_per_startup: toml
+                .max_rollouts_per_startup
+                .unwrap_or(defaults.max_rollouts_per_startup)
+                .min(128),
+            min_rollout_idle_hours: toml
+                .min_rollout_idle_hours
+                .unwrap_or(defaults.min_rollout_idle_hours)
+                .clamp(1, 48),
+            extract_model: toml.extract_model,
+            consolidation_model: toml.consolidation_model,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AppToolApproval {
+    #[default]
+    Auto,
+    Prompt,
+    Approve,
+}
+
+/// Default settings that apply to all apps.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppsDefaultConfig {
+    /// When `false`, apps are disabled unless overridden by per-app settings.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Whether tools with `destructive_hint = true` are allowed by default.
+    #[serde(
+        default = "default_enabled",
+        skip_serializing_if = "std::clone::Clone::clone"
+    )]
+    pub destructive_enabled: bool,
+
+    /// Whether tools with `open_world_hint = true` are allowed by default.
+    #[serde(
+        default = "default_enabled",
+        skip_serializing_if = "std::clone::Clone::clone"
+    )]
+    pub open_world_enabled: bool,
+}
+
+/// Per-tool settings for a single app tool.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppToolConfig {
+    /// Whether this tool is enabled. `Some(true)` explicitly allows this tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Approval mode for this tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<AppToolApproval>,
+}
+
+/// Tool settings for a single app.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppToolsConfig {
+    /// Per-tool overrides keyed by tool name (for example `repos/list`).
+    #[serde(default, flatten)]
+    pub tools: HashMap<String, AppToolConfig>,
+}
+
+/// Config values for a single app/connector.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppConfig {
+    /// When `false`, Codex does not surface this app.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Whether tools with `destructive_hint = true` are allowed for this app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_enabled: Option<bool>,
+
+    /// Whether tools with `open_world_hint = true` are allowed for this app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_enabled: Option<bool>,
+
+    /// Approval mode for tools in this app unless a tool override exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tools_approval_mode: Option<AppToolApproval>,
+
+    /// Whether tools are enabled by default for this app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tools_enabled: Option<bool>,
+
+    /// Per-tool settings for this app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<AppToolsConfig>,
+}
+
+/// App/connector settings loaded from `config.toml`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppsConfigToml {
+    /// Default settings for all apps.
+    #[serde(default, rename = "_default", skip_serializing_if = "Option::is_none")]
+    pub default: Option<AppsDefaultConfig>,
+
+    /// Per-app settings keyed by app ID (for example `[apps.google_drive]`).
+    #[serde(default, flatten)]
+    pub apps: HashMap<String, AppConfig>,
+}
+
 // ===== OTEL configuration =====
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
@@ -356,6 +616,9 @@ pub struct OtelConfigToml {
 
     /// Optional trace exporter
     pub trace_exporter: Option<OtelExporterKind>,
+
+    /// Optional metrics exporter
+    pub metrics_exporter: Option<OtelExporterKind>,
 }
 
 /// Effective OTEL settings after defaults are applied.
@@ -393,26 +656,31 @@ impl Default for Notifications {
     }
 }
 
-/// How TUI2 should interpret mouse scroll events.
-///
-/// Terminals generally encode both mouse wheels and trackpads as the same "scroll up/down" mouse
-/// button events, without a magnitude. This setting controls whether Codex uses a heuristic to
-/// infer wheel vs trackpad per stream, or forces a specific behavior.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ScrollInputMode {
-    /// Infer wheel vs trackpad behavior per scroll stream.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationMethod {
+    #[default]
     Auto,
-    /// Always treat scroll events as mouse-wheel input (fixed lines per tick).
-    Wheel,
-    /// Always treat scroll events as trackpad input (fractional accumulation).
-    Trackpad,
+    Osc9,
+    Bel,
 }
 
-impl Default for ScrollInputMode {
-    fn default() -> Self {
-        Self::Auto
+impl fmt::Display for NotificationMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NotificationMethod::Auto => write!(f, "auto"),
+            NotificationMethod::Osc9 => write!(f, "osc9"),
+            NotificationMethod::Bel => write!(f, "bel"),
+        }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelAvailabilityNuxConfig {
+    /// Number of times a startup availability NUX has been shown per model slug.
+    #[serde(default, flatten)]
+    pub shown_count: HashMap<String, u32>,
 }
 
 /// Collection of settings that are specific to the TUI.
@@ -424,6 +692,11 @@ pub struct Tui {
     #[serde(default)]
     pub notifications: Notifications,
 
+    /// Notification method to use for unfocused terminal notifications.
+    /// Defaults to `auto`.
+    #[serde(default)]
+    pub notification_method: NotificationMethod,
+
     /// Enable animations (welcome screen, shimmer effects, spinners).
     /// Defaults to `true`.
     #[serde(default = "default_true")]
@@ -433,109 +706,6 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
-
-    /// Override the *wheel* event density used to normalize TUI2 scrolling.
-    ///
-    /// Terminals generally deliver both mouse wheels and trackpads as discrete `scroll up/down`
-    /// mouse events with direction but no magnitude. Unfortunately, the *number* of raw events
-    /// per physical wheel notch varies by terminal (commonly 1, 3, or 9+). TUI2 uses this value
-    /// to normalize that raw event density into consistent "wheel tick" behavior.
-    ///
-    /// Wheel math (conceptually):
-    ///
-    /// - A single event contributes `1 / scroll_events_per_tick` tick-equivalents.
-    /// - Wheel-like streams then scale that by `scroll_wheel_lines` so one physical notch scrolls
-    ///   a fixed number of lines.
-    ///
-    /// Trackpad math is intentionally *not* fully tied to this value: in trackpad-like mode, TUI2
-    /// uses `min(scroll_events_per_tick, 3)` as the divisor so terminals with dense wheel ticks
-    /// (e.g. 9 events per notch) do not make trackpads feel artificially slow.
-    ///
-    /// Defaults are derived per terminal from [`crate::terminal::TerminalInfo`] when TUI2 starts.
-    /// See `codex-rs/tui2/docs/scroll_input_model.md` for the probe data and rationale.
-    pub scroll_events_per_tick: Option<u16>,
-
-    /// Override how many transcript lines one physical *wheel notch* should scroll in TUI2.
-    ///
-    /// This is the "classic feel" knob. Defaults to 3.
-    ///
-    /// Wheel-like per-event contribution is `scroll_wheel_lines / scroll_events_per_tick`. For
-    /// example, in a terminal that emits 9 events per notch, the default `3 / 9` yields 1/3 of a
-    /// line per event and totals 3 lines once the full notch burst arrives.
-    ///
-    /// See `codex-rs/tui2/docs/scroll_input_model.md` for details on the stream model and the
-    /// wheel/trackpad heuristic.
-    pub scroll_wheel_lines: Option<u16>,
-
-    /// Override baseline trackpad scroll sensitivity in TUI2.
-    ///
-    /// Trackpads do not have discrete notches, but terminals still emit discrete `scroll up/down`
-    /// events. In trackpad-like mode, TUI2 accumulates fractional scroll and only applies whole
-    /// lines to the viewport.
-    ///
-    /// Trackpad per-event contribution is:
-    ///
-    /// - `scroll_trackpad_lines / min(scroll_events_per_tick, 3)`
-    ///
-    /// (plus optional bounded acceleration; see `scroll_trackpad_accel_*`). The `min(..., 3)`
-    /// divisor is deliberate: `scroll_events_per_tick` is calibrated from *wheel* behavior and
-    /// can be much larger than trackpad event density, which would otherwise make trackpads feel
-    /// too slow in dense-wheel terminals.
-    ///
-    /// Defaults to 1, meaning one tick-equivalent maps to one transcript line.
-    pub scroll_trackpad_lines: Option<u16>,
-
-    /// Trackpad acceleration: approximate number of events required to gain +1x speed in TUI2.
-    ///
-    /// This keeps small swipes precise while allowing large/faster swipes to cover more content.
-    /// Defaults are chosen to address terminals where trackpad event density is comparatively low.
-    ///
-    /// Concretely, TUI2 computes an acceleration multiplier for trackpad-like streams:
-    ///
-    /// - `multiplier = clamp(1 + abs(events) / scroll_trackpad_accel_events, 1..scroll_trackpad_accel_max)`
-    ///
-    /// The multiplier is applied to the stream’s computed line delta (including any carried
-    /// fractional remainder).
-    pub scroll_trackpad_accel_events: Option<u16>,
-
-    /// Trackpad acceleration: maximum multiplier applied to trackpad-like streams.
-    ///
-    /// Set to 1 to effectively disable trackpad acceleration.
-    ///
-    /// See [`Tui::scroll_trackpad_accel_events`] for the exact multiplier formula.
-    pub scroll_trackpad_accel_max: Option<u16>,
-
-    /// Select how TUI2 interprets mouse scroll input.
-    ///
-    /// - `auto` (default): infer wheel vs trackpad per scroll stream.
-    /// - `wheel`: always use wheel behavior (fixed lines per wheel notch).
-    /// - `trackpad`: always use trackpad behavior (fractional accumulation; wheel may feel slow).
-    #[serde(default)]
-    pub scroll_mode: ScrollInputMode,
-
-    /// Auto-mode threshold: maximum time (ms) for the first tick-worth of events to arrive.
-    ///
-    /// In `scroll_mode = "auto"`, TUI2 starts a stream as trackpad-like (to avoid overshoot) and
-    /// promotes it to wheel-like if `scroll_events_per_tick` events arrive "quickly enough". This
-    /// threshold controls what "quickly enough" means.
-    ///
-    /// Most users should leave this unset; it is primarily for terminals that emit wheel ticks
-    /// batched over longer time spans.
-    pub scroll_wheel_tick_detect_max_ms: Option<u64>,
-
-    /// Auto-mode fallback: maximum duration (ms) that a very small stream is still treated as wheel-like.
-    ///
-    /// This is only used when `scroll_events_per_tick` is effectively 1 (one event per wheel
-    /// notch). In that case, we cannot observe a "tick completion time", so TUI2 treats a
-    /// short-lived, small stream (<= 2 events) as wheel-like to preserve classic wheel behavior.
-    pub scroll_wheel_like_max_duration_ms: Option<u64>,
-
-    /// Invert mouse scroll direction in TUI2.
-    ///
-    /// This flips the scroll sign after terminal detection. It is applied consistently to both
-    /// wheel and trackpad input.
-    #[serde(default)]
-    pub scroll_invert: bool,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
@@ -561,6 +731,25 @@ pub struct Tui {
     /// Custom placeholder text for the input area.
     #[serde(default)]
     pub input_placeholder: Option<String>,
+
+    /// Ordered list of status line item identifiers.
+    ///
+    /// When set, the TUI renders the selected items as the status line.
+    /// When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and
+    /// `current-dir`.
+    #[serde(default)]
+    pub status_line: Option<Vec<String>>,
+
+    /// Syntax highlighting theme name (kebab-case).
+    ///
+    /// When set, overrides automatic light/dark theme detection.
+    /// Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.
+    #[serde(default)]
+    pub theme: Option<String>,
+
+    /// Startup tooltip availability NUX state persisted by the TUI.
+    #[serde(default)]
+    pub model_availability_nux: ModelAvailabilityNuxConfig,
 }
 
 const fn default_true() -> bool {
@@ -571,7 +760,6 @@ const fn default_true() -> bool {
 /// (primarily the Codex IDE extension). NOTE: these are different from
 /// notifications - notices are warnings, NUX screens, acknowledgements, etc.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
 pub struct Notice {
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,
@@ -592,6 +780,27 @@ pub struct Notice {
 impl Notice {
     /// referenced by config_edit helpers when writing notice flags
     pub(crate) const TABLE_KEY: &'static str = "notice";
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SkillConfig {
+    pub path: AbsolutePathBuf,
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PluginConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SkillsConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config: Vec<SkillConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
@@ -728,75 +937,6 @@ impl Default for ShellEnvironmentPolicy {
     }
 }
 
-/// Configuration for a startup background task.
-///
-/// Startup tasks are background terminal commands that run automatically
-/// when a Codex session begins. They require the `unified_exec` feature
-/// to be enabled.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct StartupTaskToml {
-    /// Optional human-readable name for the task.
-    #[serde(default)]
-    pub name: Option<String>,
-
-    /// The shell command to execute.
-    pub command: String,
-
-    /// Working directory for the command. Defaults to the session cwd.
-    #[serde(default)]
-    pub cwd: Option<PathBuf>,
-
-    /// When `false`, this task is skipped. Defaults to `true`.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Maximum time in milliseconds to wait for initial output before
-    /// yielding control back to the session. Defaults to 5000ms.
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
-
-    /// If `true`, session initialization continues even if this task fails.
-    /// Defaults to `true`.
-    #[serde(default = "default_true")]
-    pub continue_on_error: bool,
-}
-
-/// Processed startup task configuration ready for execution.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StartupTask {
-    /// Optional human-readable name for the task.
-    pub name: Option<String>,
-
-    /// The shell command to execute.
-    pub command: String,
-
-    /// Working directory for the command.
-    pub cwd: Option<PathBuf>,
-
-    /// Whether this task is enabled.
-    pub enabled: bool,
-
-    /// Maximum time in milliseconds to wait for initial output.
-    pub timeout_ms: Option<u64>,
-
-    /// Whether to continue if this task fails.
-    pub continue_on_error: bool,
-}
-
-impl From<StartupTaskToml> for StartupTask {
-    fn from(toml: StartupTaskToml) -> Self {
-        Self {
-            name: toml.name,
-            command: toml.command,
-            cwd: toml.cwd,
-            enabled: toml.enabled,
-            timeout_ms: toml.timeout_ms,
-            continue_on_error: toml.continue_on_error,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,6 +962,7 @@ mod tests {
             }
         );
         assert!(cfg.enabled);
+        assert!(!cfg.required);
         assert!(cfg.enabled_tools.is_none());
         assert!(cfg.disabled_tools.is_none());
     }
@@ -928,6 +1069,20 @@ mod tests {
         .expect("should deserialize disabled server config");
 
         assert!(!cfg.enabled);
+        assert!(!cfg.required);
+    }
+
+    #[test]
+    fn deserialize_required_server_config() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            command = "echo"
+            required = true
+        "#,
+        )
+        .expect("should deserialize required server config");
+
+        assert!(cfg.required);
     }
 
     #[test]
@@ -999,6 +1154,22 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_streamable_http_server_config_with_oauth_resource() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect("should deserialize http config with oauth_resource");
+
+        assert_eq!(
+            cfg.oauth_resource,
+            Some("https://api.example.com".to_string())
+        );
+    }
+
+    #[test]
     fn deserialize_server_config_with_tool_filters() {
         let cfg: McpServerConfig = toml::from_str(
             r#"
@@ -1052,6 +1223,20 @@ mod tests {
         "#,
         )
         .expect_err("should reject env_http_headers for stdio transport");
+
+        let err = toml::from_str::<McpServerConfig>(
+            r#"
+            command = "echo"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect_err("should reject oauth_resource for stdio transport");
+
+        assert!(
+            err.to_string()
+                .contains("oauth_resource is not supported for stdio"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

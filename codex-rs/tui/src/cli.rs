@@ -1,7 +1,7 @@
 use clap::Parser;
 use clap::ValueHint;
-use codex_common::ApprovalModeCliArg;
-use codex_common::CliConfigOverrides;
+use codex_utils_cli::ApprovalModeCliArg;
+use codex_utils_cli::CliConfigOverrides;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -58,7 +58,7 @@ pub struct Cli {
     #[arg(long = "oss", default_value_t = false)]
     pub oss: bool,
 
-    /// Specify which local provider to use (lmstudio, ollama, or ollama-chat).
+    /// Specify which local provider to use (lmstudio or ollama).
     /// If not specified with --oss, will use config default or show selection.
     #[arg(long = "local-provider")]
     pub oss_provider: Option<String>,
@@ -70,7 +70,7 @@ pub struct Cli {
     /// Select the sandbox policy to use when executing model-generated shell
     /// commands.
     #[arg(long = "sandbox", short = 's')]
-    pub sandbox_mode: Option<codex_common::SandboxModeCliArg>,
+    pub sandbox_mode: Option<codex_utils_cli::SandboxModeCliArg>,
 
     /// Configure when the model requires human approval before executing a command.
     #[arg(long = "ask-for-approval", short = 'a')]
@@ -94,7 +94,7 @@ pub struct Cli {
     #[clap(long = "cd", short = 'C', value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
-    /// Enable web search (off by default). When enabled, the native Responses `web_search` tool is available to the model (no per‑call approval).
+    /// Enable live web search. When enabled, the native Responses `web_search` tool is available to the model (no per‑call approval).
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
 
@@ -109,12 +109,6 @@ pub struct Cli {
     /// scrollback in alternate screen buffers.
     #[arg(long = "no-alt-screen", default_value_t = false)]
     pub no_alt_screen: bool,
-
-    /// Run a command in the background when the session starts.
-    /// Automatically enables the unified_exec (background terminal) feature.
-    /// Can be specified multiple times for multiple tasks.
-    #[arg(long = "startup-task", value_name = "COMMAND", action = clap::ArgAction::Append)]
-    pub startup_tasks: Vec<String>,
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
