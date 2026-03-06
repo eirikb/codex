@@ -732,6 +732,16 @@ pub struct Tui {
     #[serde(default)]
     pub input_placeholder: Option<String>,
 
+    /// Hide the exit message showing token usage.
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub hide_exit_message: Option<bool>,
+
+    /// Custom brand name to replace "Codex" in the UI.
+    /// Defaults to `"Codex"`.
+    #[serde(default)]
+    pub brand_name: Option<String>,
+
     /// Ordered list of status line item identifiers.
     ///
     /// When set, the TUI renders the selected items as the status line.

@@ -32,6 +32,7 @@ pub(crate) struct CommandPopup {
     builtins: Vec<(&'static str, SlashCommand)>,
     prompts: Vec<CustomPrompt>,
     state: ScrollState,
+    brand_name: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,7 +63,7 @@ impl From<CommandPopupFlags> for slash_commands::BuiltinCommandFlags {
 }
 
 impl CommandPopup {
-    pub(crate) fn new(mut prompts: Vec<CustomPrompt>, flags: CommandPopupFlags) -> Self {
+    pub(crate) fn new(mut prompts: Vec<CustomPrompt>, flags: CommandPopupFlags, brand_name: String) -> Self {
         // Keep built-in availability in sync with the composer.
         let builtins: Vec<(&'static str, SlashCommand)> =
             slash_commands::builtins_for_input(flags.into())
@@ -78,6 +79,7 @@ impl CommandPopup {
             builtins,
             prompts,
             state: ScrollState::new(),
+            brand_name,
         }
     }
 
@@ -219,7 +221,7 @@ impl CommandPopup {
             .map(|(item, indices)| {
                 let (name, description) = match item {
                     CommandItem::Builtin(cmd) => {
-                        (format!("/{}", cmd.command()), cmd.description().to_string())
+                        (format!("/{}", cmd.command()), cmd.description(&self.brand_name))
                     }
                     CommandItem::UserPrompt(i) => {
                         let prompt = &self.prompts[i];
@@ -293,7 +295,7 @@ mod tests {
 
     #[test]
     fn filter_includes_init_when_typing_prefix() {
-        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         // Simulate the composer line starting with '/in' so the popup filters
         // matching commands by prefix.
         popup.on_composer_text_change("/in".to_string());
@@ -313,7 +315,7 @@ mod tests {
 
     #[test]
     fn selecting_init_by_exact_match() {
-        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         popup.on_composer_text_change("/init".to_string());
 
         // When an exact match exists, the selected command should be that
@@ -328,7 +330,7 @@ mod tests {
 
     #[test]
     fn model_is_first_suggestion_for_mo() {
-        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         popup.on_composer_text_change("/mo".to_string());
         let matches = popup.filtered_items();
         match matches.first() {
@@ -342,7 +344,7 @@ mod tests {
 
     #[test]
     fn filtered_commands_keep_presentation_order_for_prefix() {
-        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         popup.on_composer_text_change("/m".to_string());
 
         let cmds: Vec<&str> = popup
@@ -374,7 +376,7 @@ mod tests {
                 argument_hint: None,
             },
         ];
-        let popup = CommandPopup::new(prompts, CommandPopupFlags::default());
+        let popup = CommandPopup::new(prompts, CommandPopupFlags::default(), "Codex".to_string());
         let items = popup.filtered_items();
         let mut prompt_names: Vec<String> = items
             .into_iter()
@@ -399,6 +401,7 @@ mod tests {
                 argument_hint: None,
             }],
             CommandPopupFlags::default(),
+            "Codex".to_string(),
         );
         let items = popup.filtered_items();
         let has_collision_prompt = items.into_iter().any(|it| match it {
@@ -422,6 +425,7 @@ mod tests {
                 argument_hint: None,
             }],
             CommandPopupFlags::default(),
+            "Codex".to_string(),
         );
         let rows = popup.rows_from_matches(vec![(CommandItem::UserPrompt(0), None)]);
         let description = rows.first().and_then(|row| row.description.as_deref());
@@ -442,6 +446,7 @@ mod tests {
                 argument_hint: None,
             }],
             CommandPopupFlags::default(),
+            "Codex".to_string(),
         );
         let rows = popup.rows_from_matches(vec![(CommandItem::UserPrompt(0), None)]);
         let description = rows.first().and_then(|row| row.description.as_deref());
@@ -450,7 +455,7 @@ mod tests {
 
     #[test]
     fn prefix_filter_limits_matches_for_ac() {
-        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         popup.on_composer_text_change("/ac".to_string());
 
         let cmds: Vec<&str> = popup
@@ -469,7 +474,7 @@ mod tests {
 
     #[test]
     fn quit_hidden_in_empty_filter_but_shown_for_prefix() {
-        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         popup.on_composer_text_change("/".to_string());
         let items = popup.filtered_items();
         assert!(!items.contains(&CommandItem::Builtin(SlashCommand::Quit)));
@@ -481,7 +486,7 @@ mod tests {
 
     #[test]
     fn collab_command_hidden_when_collaboration_modes_disabled() {
-        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let mut popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         popup.on_composer_text_change("/".to_string());
 
         let cmds: Vec<&str> = popup
@@ -514,7 +519,9 @@ mod tests {
                 realtime_conversation_enabled: false,
                 audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
+                feedback_enabled: true,
             },
+            "Codex".to_string(),
         );
         popup.on_composer_text_change("/collab".to_string());
 
@@ -536,7 +543,9 @@ mod tests {
                 realtime_conversation_enabled: false,
                 audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
+                feedback_enabled: true,
             },
+            "Codex".to_string(),
         );
         popup.on_composer_text_change("/plan".to_string());
 
@@ -558,7 +567,9 @@ mod tests {
                 realtime_conversation_enabled: false,
                 audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
+                feedback_enabled: true,
             },
+            "Codex".to_string(),
         );
         popup.on_composer_text_change("/pers".to_string());
 
@@ -588,7 +599,9 @@ mod tests {
                 realtime_conversation_enabled: false,
                 audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
+                feedback_enabled: true,
             },
+            "Codex".to_string(),
         );
         popup.on_composer_text_change("/personality".to_string());
 
@@ -610,7 +623,9 @@ mod tests {
                 realtime_conversation_enabled: true,
                 audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
+                feedback_enabled: true,
             },
+            "Codex".to_string(),
         );
         popup.on_composer_text_change("/aud".to_string());
 
@@ -631,7 +646,7 @@ mod tests {
 
     #[test]
     fn debug_commands_are_hidden_from_popup() {
-        let popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default());
+        let popup = CommandPopup::new(Vec::new(), CommandPopupFlags::default(), "Codex".to_string());
         let cmds: Vec<&str> = popup
             .filtered_items()
             .into_iter()

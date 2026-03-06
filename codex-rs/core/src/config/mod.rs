@@ -307,6 +307,12 @@ pub struct Config {
     /// Custom placeholder text for the input area.
     pub tui_input_placeholder: Option<String>,
 
+    /// Hide the exit message showing token usage.
+    pub tui_hide_exit_message: Option<bool>,
+
+    /// Brand name displayed in the UI (defaults to "Codex").
+    pub tui_brand_name: String,
+
     /// Ordered list of status line item identifiers for the TUI.
     ///
     /// When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and
@@ -2287,6 +2293,12 @@ impl Config {
             tui_hide_startup_tips: cfg.tui.as_ref().and_then(|t| t.hide_startup_tips),
             tui_hide_session_header: cfg.tui.as_ref().and_then(|t| t.hide_session_header),
             tui_input_placeholder: cfg.tui.as_ref().and_then(|t| t.input_placeholder.clone()),
+            tui_hide_exit_message: cfg.tui.as_ref().and_then(|t| t.hide_exit_message),
+            tui_brand_name: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.brand_name.clone())
+                .unwrap_or_else(|| "Codex".to_string()),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
             otel: {
@@ -2844,6 +2856,8 @@ theme = "dracula"
                 hide_startup_tips: None,
                 hide_session_header: None,
                 input_placeholder: None,
+                hide_exit_message: None,
+                brand_name: None,
                 status_line: None,
                 theme: None,
                 model_availability_nux: ModelAvailabilityNuxConfig::default(),
@@ -5225,6 +5239,8 @@ model_verbosity = "high"
                 tui_hide_startup_tips: None,
                 tui_hide_session_header: None,
                 tui_input_placeholder: None,
+                tui_hide_exit_message: None,
+                tui_brand_name: "Codex".to_string(),
                 tui_status_line: None,
                 tui_theme: None,
                 otel: OtelConfig::default(),
@@ -5358,6 +5374,8 @@ model_verbosity = "high"
             tui_hide_startup_tips: None,
             tui_hide_session_header: None,
             tui_input_placeholder: None,
+            tui_hide_exit_message: None,
+            tui_brand_name: "Codex".to_string(),
             tui_status_line: None,
             tui_theme: None,
             otel: OtelConfig::default(),
@@ -5489,6 +5507,8 @@ model_verbosity = "high"
             tui_hide_startup_tips: None,
             tui_hide_session_header: None,
             tui_input_placeholder: None,
+            tui_hide_exit_message: None,
+            tui_brand_name: "Codex".to_string(),
             tui_status_line: None,
             tui_theme: None,
             otel: OtelConfig::default(),
@@ -5606,6 +5626,8 @@ model_verbosity = "high"
             tui_hide_startup_tips: None,
             tui_hide_session_header: None,
             tui_input_placeholder: None,
+            tui_hide_exit_message: None,
+            tui_brand_name: "Codex".to_string(),
             tui_status_line: None,
             tui_theme: None,
             otel: OtelConfig::default(),
