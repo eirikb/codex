@@ -1359,6 +1359,7 @@ impl ChatWidget {
             snapshot
                 .feedback_diagnostics_attachment_text(true)
                 .is_some(),
+            &self.config.tui_brand_name,
         );
         self.bottom_pane.show_selection_view(params);
         self.request_redraw();
@@ -1848,7 +1849,7 @@ impl ChatWidget {
         self.finalize_turn();
 
         let message = if message.trim().is_empty() {
-            "Codex is currently experiencing high load.".to_string()
+            format!("{} is currently experiencing high load.", self.config.tui_brand_name)
         } else {
             message
         };
@@ -3166,6 +3167,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_feedback_enabled(widget.config.feedback_enabled);
+        widget
+            .bottom_pane
+            .set_brand_name(widget.config.tui_brand_name.clone());
 
         widget
     }
@@ -3517,6 +3521,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_feedback_enabled(widget.config.feedback_enabled);
+        widget
+            .bottom_pane
+            .set_brand_name(widget.config.tui_brand_name.clone());
 
         widget
     }
@@ -3956,8 +3963,7 @@ impl ChatWidget {
             SlashCommand::Copy => {
                 let Some(text) = self.last_copyable_output.as_deref() else {
                     self.add_info_message(
-                        "`/copy` is unavailable before the first Codex output or right after a rollback."
-                            .to_string(),
+                        format!("`/copy` is unavailable before the first {} output or right after a rollback.", self.config.tui_brand_name),
                         None,
                     );
                     return;
@@ -3972,7 +3978,7 @@ impl ChatWidget {
                                 .to_string(),
                         );
                         self.add_info_message(
-                            "Copied latest Codex output to clipboard.".to_string(),
+                            format!("Copied latest {} output to clipboard.", self.config.tui_brand_name),
                             hint,
                         );
                     }
@@ -4986,7 +4992,7 @@ impl ChatWidget {
 
     pub(crate) fn maybe_post_pending_notification(&mut self, tui: &mut crate::tui::Tui) {
         if let Some(notif) = self.pending_notification.take() {
-            tui.notify(notif.display());
+            tui.notify(notif.display(&self.config.tui_brand_name));
         }
     }
 
@@ -5660,7 +5666,7 @@ impl ChatWidget {
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Select Personality".bold()));
-        header.push(Line::from("Choose a communication style for Codex.".dim()));
+        header.push(Line::from(format!("Choose a communication style for {}.", self.config.tui_brand_name).dim()));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
@@ -5696,7 +5702,7 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             title: Some("Settings".to_string()),
-            subtitle: Some("Configure settings for Codex.".to_string()),
+            subtitle: Some(format!("Configure settings for {}.", self.config.tui_brand_name)),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
@@ -6613,7 +6619,7 @@ impl ChatWidget {
         let mut header_children: Vec<Box<dyn Renderable>> = Vec::new();
         let title_line = Line::from("Enable full access?").bold();
         let info_line = Line::from(vec![
-            "When Codex runs with full access, it can edit any file on your computer and run commands with network, without your approval. "
+            format!("When {} runs with full access, it can edit any file on your computer and run commands with network, without your approval. ", self.config.tui_brand_name)
                 .into(),
             "Exercise caution when enabling full access. This significantly increases the risk of data loss, leaks, or unexpected behavior."
                 .fg(Color::Red),
@@ -6853,7 +6859,7 @@ impl ChatWidget {
         let mut header = ColumnRenderable::new();
         header.push(*Box::new(
             Paragraph::new(vec![
-                line!["Set up the Codex agent sandbox to protect your files and control network access. Learn more <https://developers.openai.com/codex/windows>"],
+                Line::from(format!("Set up the {} agent sandbox to protect your files and control network access. Learn more <https://developers.openai.com/codex/windows>", self.config.tui_brand_name)),
             ])
             .wrap(Wrap { trim: false }),
         ));
@@ -6921,7 +6927,7 @@ impl ChatWidget {
         ]);
         lines.push(line![""]);
         lines.push(line![
-            "You can still use Codex in a non-admin sandbox. It carries greater risk if prompt injected."
+            format!("You can still use {} in a non-admin sandbox. It carries greater risk if prompt injected.", self.config.tui_brand_name)
         ]);
         lines.push(line![
             "Learn more <https://developers.openai.com/codex/windows>"
@@ -6951,7 +6957,7 @@ impl ChatWidget {
                 ..Default::default()
             },
             SelectionItem {
-                name: "Use Codex with non-admin sandbox".to_string(),
+                name: format!("Use {} with non-admin sandbox", self.config.tui_brand_name),
                 description: None,
                 actions: vec![Box::new({
                     let otel = self.otel_manager.clone();
@@ -7522,6 +7528,7 @@ impl ChatWidget {
             None,
             config.cwd.clone(),
             CODEX_CLI_VERSION,
+            config.tui_brand_name.clone(),
         ))
     }
 
@@ -7677,7 +7684,7 @@ impl ChatWidget {
             let instructions = if connector.is_accessible {
                 "Manage this app in your browser."
             } else {
-                "Install this app in your browser, then reload Codex."
+                &format!("Install this app in your browser, then reload {}.", self.config.tui_brand_name)
             };
             if let Some(install_url) = connector.install_url.clone() {
                 let app_id = connector.id.clone();
@@ -8395,7 +8402,7 @@ enum Notification {
 }
 
 impl Notification {
-    fn display(&self) -> String {
+    fn display(&self, brand_name: &str) -> String {
         match self {
             Notification::AgentTurnComplete { response } => {
                 Notification::agent_turn_preview(response)
@@ -8406,7 +8413,8 @@ impl Notification {
             }
             Notification::EditApprovalRequested { cwd, changes } => {
                 format!(
-                    "Codex wants to edit {}",
+                    "{} wants to edit {}",
+                    brand_name,
                     if changes.len() == 1 {
                         #[allow(clippy::unwrap_used)]
                         display_path_for(changes.first().unwrap(), cwd)

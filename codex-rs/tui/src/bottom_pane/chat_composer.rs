@@ -408,6 +408,8 @@ pub(crate) struct ChatComposer {
     status_line_enabled: bool,
     /// When false, hides the /feedback command from the command popup.
     feedback_enabled: bool,
+    /// Brand name displayed in command descriptions.
+    brand_name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +531,7 @@ impl ChatComposer {
             status_line_value: None,
             status_line_enabled: false,
             feedback_enabled: true,
+            brand_name: "Codex".to_string(),
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -1932,6 +1935,10 @@ impl ChatComposer {
 
     pub fn set_feedback_enabled(&mut self, enabled: bool) {
         self.feedback_enabled = enabled;
+    }
+
+    pub fn set_brand_name(&mut self, name: String) {
+        self.brand_name = name;
     }
 
     fn mentions_enabled(&self) -> bool {
@@ -3462,6 +3469,7 @@ impl ChatComposer {
                             windows_degraded_sandbox_active: self.windows_degraded_sandbox_active,
                             feedback_enabled: self.feedback_enabled,
                         },
+                        self.brand_name.clone(),
                     );
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);

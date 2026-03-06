@@ -787,6 +787,7 @@ fn exec_snippet(command: &[String]) -> String {
 pub fn new_approval_decision_cell(
     command: Vec<String>,
     decision: codex_protocol::protocol::ReviewDecision,
+    brand_name: &str,
 ) -> Box<dyn HistoryCell> {
     use codex_protocol::protocol::NetworkPolicyRuleAction;
     use codex_protocol::protocol::ReviewDecision::*;
@@ -799,7 +800,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     "You ".into(),
                     "approved".bold(),
-                    " codex to run ".into(),
+                    format!(" {brand_name} to run ").into(),
                     snippet,
                     " this time".bold(),
                 ],
@@ -814,7 +815,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     "You ".into(),
                     "approved".bold(),
-                    " codex to always run commands that start with ".into(),
+                    format!(" {brand_name} to always run commands that start with ").into(),
                     snippet,
                 ],
             )
@@ -826,7 +827,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     "You ".into(),
                     "approved".bold(),
-                    " codex to run ".into(),
+                    format!(" {brand_name} to run ").into(),
                     snippet,
                     " every time this session".bold(),
                 ],
@@ -840,7 +841,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     "You ".into(),
                     "persisted".bold(),
-                    " Codex network access to ".into(),
+                    format!(" {brand_name} network access to ").into(),
                     Span::from(network_policy_amendment.host).dim(),
                 ],
             ),
@@ -849,7 +850,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     "You ".into(),
                     "denied".bold(),
-                    " codex network access to ".into(),
+                    format!(" {brand_name} network access to ").into(),
                     Span::from(network_policy_amendment.host).dim(),
                     " and saved that rule".into(),
                 ],
@@ -1063,6 +1064,7 @@ pub(crate) fn new_session_info(
             reasoning_effort,
             config.cwd.clone(),
             CODEX_CLI_VERSION,
+            config.tui_brand_name.clone(),
         );
         parts.push(Box::new(header));
     }
@@ -1079,7 +1081,7 @@ pub(crate) fn new_session_info(
                 Line::from(vec![
                     "  ".into(),
                     "/init".into(),
-                    " - create an AGENTS.md file with instructions for Codex".dim(),
+                    Span::from(format!(" - create an AGENTS.md file with instructions for {}", config.tui_brand_name)).dim(),
                 ]),
                 Line::from(vec![
                     "  ".into(),
@@ -1089,7 +1091,7 @@ pub(crate) fn new_session_info(
                 Line::from(vec![
                     "  ".into(),
                     "/permissions".into(),
-                    " - choose what Codex is allowed to do".dim(),
+                    Span::from(format!(" - choose what {} is allowed to do", config.tui_brand_name)).dim(),
                 ]),
                 Line::from(vec![
                     "  ".into(),
@@ -1147,6 +1149,7 @@ pub(crate) struct SessionHeaderHistoryCell {
     model_style: Style,
     reasoning_effort: Option<ReasoningEffortConfig>,
     directory: PathBuf,
+    brand_name: String,
 }
 
 impl SessionHeaderHistoryCell {
@@ -1155,6 +1158,7 @@ impl SessionHeaderHistoryCell {
         reasoning_effort: Option<ReasoningEffortConfig>,
         directory: PathBuf,
         version: &'static str,
+        brand_name: String,
     ) -> Self {
         Self::new_with_style(
             model,
@@ -1162,6 +1166,7 @@ impl SessionHeaderHistoryCell {
             reasoning_effort,
             directory,
             version,
+            brand_name,
         )
     }
 
@@ -1171,6 +1176,7 @@ impl SessionHeaderHistoryCell {
         reasoning_effort: Option<ReasoningEffortConfig>,
         directory: PathBuf,
         version: &'static str,
+        brand_name: String,
     ) -> Self {
         Self {
             version,
@@ -1178,6 +1184,7 @@ impl SessionHeaderHistoryCell {
             model_style,
             reasoning_effort,
             directory,
+            brand_name,
         }
     }
 
@@ -1228,10 +1235,9 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
         let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
 
-        // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from(self.brand_name.clone()).bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];
@@ -3285,6 +3291,7 @@ mod tests {
             Some(ReasoningEffortConfig::High),
             std::env::temp_dir(),
             "test",
+            "Codex".to_string(),
         );
 
         let lines = render_lines(&cell.display_lines(80));

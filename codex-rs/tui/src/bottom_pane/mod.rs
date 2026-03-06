@@ -178,6 +178,7 @@ pub(crate) struct BottomPane {
     pending_thread_approvals: PendingThreadApprovals,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    brand_name: String,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -229,6 +230,7 @@ impl BottomPane {
             animations_enabled,
             context_window_percent: None,
             context_window_used_tokens: None,
+            brand_name: "Codex".to_string(),
         }
     }
 
@@ -323,6 +325,11 @@ impl BottomPane {
 
     pub fn set_feedback_enabled(&mut self, enabled: bool) {
         self.composer.set_feedback_enabled(enabled);
+    }
+
+    pub fn set_brand_name(&mut self, name: String) {
+        self.composer.set_brand_name(name.clone());
+        self.brand_name = name;
     }
 
     pub fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
@@ -890,7 +897,7 @@ impl BottomPane {
         };
 
         // Otherwise create a new approval modal overlay.
-        let modal = ApprovalOverlay::new(request, self.app_event_tx.clone(), features.clone());
+        let modal = ApprovalOverlay::new(request, self.app_event_tx.clone(), features.clone(), self.brand_name.clone());
         self.pause_status_timer_for_modal();
         self.push_view(Box::new(modal));
     }

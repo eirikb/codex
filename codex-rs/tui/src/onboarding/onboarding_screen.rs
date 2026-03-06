@@ -92,6 +92,7 @@ impl OnboardingScreen {
             !matches!(login_status, LoginStatus::NotAuthenticated),
             tui.frame_requester(),
             config.animations,
+            config.tui_brand_name.clone(),
         )));
         if show_login_screen {
             let highlighted_mode = match forced_login_method {
@@ -110,6 +111,7 @@ impl OnboardingScreen {
                 forced_chatgpt_workspace_id,
                 forced_login_method,
                 animations_enabled: config.animations,
+                brand_name: config.tui_brand_name.clone(),
             }))
         }
         #[cfg(target_os = "windows")]

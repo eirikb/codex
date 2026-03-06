@@ -205,6 +205,7 @@ pub(crate) struct AuthModeWidget {
     pub forced_chatgpt_workspace_id: Option<String>,
     pub forced_login_method: Option<ForcedLoginMethod>,
     pub animations_enabled: bool,
+    pub brand_name: String,
 }
 
 impl AuthModeWidget {
@@ -294,7 +295,7 @@ impl AuthModeWidget {
         let mut lines: Vec<Line> = vec![
             Line::from(vec![
                 "  ".into(),
-                "Sign in with ChatGPT to use Codex as part of your paid plan".into(),
+                format!("Sign in with ChatGPT to use {} as part of your paid plan", self.brand_name).into(),
             ]),
             Line::from(vec![
                 "  ".into(),
@@ -444,14 +445,14 @@ impl AuthModeWidget {
             "".into(),
             "  Before you start:".into(),
             "".into(),
-            "  Decide how much autonomy you want to grant Codex".into(),
+            format!("  Decide how much autonomy you want to grant {}", self.brand_name).into(),
             Line::from(vec![
                 "  For more details see the ".into(),
                 "\u{1b}]8;;https://developers.openai.com/codex/security\u{7}Codex docs\u{1b}]8;;\u{7}".underlined(),
             ])
             .dim(),
             "".into(),
-            "  Codex can make mistakes".into(),
+            format!("  {} can make mistakes", self.brand_name).into(),
             "  Review the code it writes and commands it runs".dim().into(),
             "".into(),
             "  Powered by your ChatGPT account".into(),
@@ -485,7 +486,7 @@ impl AuthModeWidget {
         let lines = vec![
             "✓ API key configured".fg(Color::Green).into(),
             "".into(),
-            "  Codex will use usage-based billing with your API key.".into(),
+            format!("  {} will use usage-based billing with your API key.", self.brand_name).into(),
         ];
 
         Paragraph::new(lines)
@@ -856,6 +857,7 @@ mod tests {
             forced_chatgpt_workspace_id: None,
             forced_login_method: Some(ForcedLoginMethod::Chatgpt),
             animations_enabled: true,
+            brand_name: "Codex".to_string(),
         };
         (widget, codex_home)
     }

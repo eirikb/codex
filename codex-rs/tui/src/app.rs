@@ -129,6 +129,7 @@ pub struct AppExitInfo {
     pub thread_name: Option<String>,
     pub update_action: Option<UpdateAction>,
     pub exit_reason: ExitReason,
+    pub hide_exit_message: bool,
 }
 
 impl AppExitInfo {
@@ -139,6 +140,7 @@ impl AppExitInfo {
             thread_name: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(message.into()),
+            hide_exit_message: false,
         }
     }
 }
@@ -580,8 +582,9 @@ async fn handle_model_migration_prompt_if_needed(
             heading_label,
             target_description,
             can_opt_out,
+            &config.tui_brand_name,
         );
-        match run_model_migration_prompt(tui, prompt_copy).await {
+        match run_model_migration_prompt(tui, prompt_copy, config.tui_brand_name.clone()).await {
             ModelMigrationOutcome::Accepted => {
                 app_event_tx.send(AppEvent::PersistModelMigrationPromptAcknowledged {
                     from_model: model.to_string(),
@@ -621,6 +624,7 @@ async fn handle_model_migration_prompt_if_needed(
                     thread_name: None,
                     update_action: None,
                     exit_reason: ExitReason::UserRequested,
+                    hide_exit_message: false,
                 });
             }
         }
@@ -808,6 +812,7 @@ impl App {
             self.chat_widget.current_reasoning_effort(),
             self.config.cwd.clone(),
             version,
+            self.config.tui_brand_name.clone(),
         )
         .display_lines(width)
     }
@@ -1809,6 +1814,7 @@ impl App {
                     thread_name: app.chat_widget.thread_name(),
                     update_action: app.pending_update_action,
                     exit_reason,
+                    hide_exit_message: app.config.tui_hide_exit_message.unwrap_or(false),
                 });
             }
         }
@@ -1881,6 +1887,7 @@ impl App {
             thread_name: app.chat_widget.thread_name(),
             update_action: app.pending_update_action,
             exit_reason,
+            hide_exit_message: app.config.tui_hide_exit_message.unwrap_or(false),
         })
     }
 
@@ -2594,7 +2601,7 @@ impl App {
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
                                         "  ".into(),
-                                        "Codex can now safely edit files and execute commands in your computer"
+                                        format!("{} can now safely edit files and execute commands in your computer", self.config.tui_brand_name)
                                             .dark_gray(),
                                     ]),
                                 ]);
@@ -3481,8 +3488,7 @@ impl App {
             Err(external_editor::EditorError::MissingEditor) => {
                 self.chat_widget
                     .add_to_history(history_cell::new_error_event(
-                    "Cannot open external editor: set $VISUAL or $EDITOR before starting Codex."
-                        .to_string(),
+                    format!("Cannot open external editor: set $VISUAL or $EDITOR before starting {}.", self.config.tui_brand_name),
                 ));
                 self.reset_external_editor_state(tui);
                 return;
@@ -5686,6 +5692,7 @@ mod tests {
             target.display_name.clone(),
             target_description,
             can_opt_out,
+            "Codex",
         );
 
         // Snapshot the copy we would show; rendering is covered by model_migration snapshots.

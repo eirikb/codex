@@ -23,12 +23,14 @@ fn main() -> anyhow::Result<()> {
             .raw_overrides
             .splice(0..0, top_cli.config_overrides.raw_overrides);
         let exit_info = run_main(inner, arg0_paths).await?;
-        let token_usage = exit_info.token_usage;
-        if !token_usage.is_zero() {
-            println!(
-                "{}",
-                codex_protocol::protocol::FinalOutput::from(token_usage),
-            );
+        if !exit_info.hide_exit_message {
+            let token_usage = exit_info.token_usage;
+            if !token_usage.is_zero() {
+                println!(
+                    "{}",
+                    codex_protocol::protocol::FinalOutput::from(token_usage),
+                );
+            }
         }
         Ok(())
     })

@@ -571,6 +571,7 @@ async fn run_ratatui_app(
                         thread_name: None,
                         update_action: Some(action),
                         exit_reason: ExitReason::UserRequested,
+                        hide_exit_message: false,
                     });
                 }
             }
@@ -614,6 +615,7 @@ async fn run_ratatui_app(
                 thread_name: None,
                 update_action: None,
                 exit_reason: ExitReason::UserRequested,
+                hide_exit_message: false,
             });
         }
         trust_decision_was_made = onboarding_result.directory_trust_decision.is_some();
@@ -657,6 +659,7 @@ async fn run_ratatui_app(
             exit_reason: ExitReason::Fatal(format!(
                 "No saved session found with ID {id_str}. Run `codex {action}` without an ID to choose from existing sessions."
             )),
+            hide_exit_message: false,
         })
     };
 
@@ -724,6 +727,7 @@ async fn run_ratatui_app(
                                     exit_reason: ExitReason::Fatal(format!(
                                         "Found latest saved session at {rollout_path}, but failed to read its metadata. Run `codex fork` to choose from existing sessions."
                                     )),
+                                    hide_exit_message: false,
                                 });
                             }
                         }
@@ -743,6 +747,7 @@ async fn run_ratatui_app(
                         thread_name: None,
                         update_action: None,
                         exit_reason: ExitReason::UserRequested,
+                        hide_exit_message: false,
                     });
                 }
                 other => other,
@@ -815,6 +820,7 @@ async fn run_ratatui_app(
                         exit_reason: ExitReason::Fatal(format!(
                             "Found latest saved session at {rollout_path}, but failed to read its metadata. Run `codex resume` to choose from existing sessions."
                         )),
+                        hide_exit_message: false,
                     });
                 }
             },
@@ -831,6 +837,7 @@ async fn run_ratatui_app(
                     thread_name: None,
                     update_action: None,
                     exit_reason: ExitReason::UserRequested,
+                    hide_exit_message: false,
                 });
             }
             other => other,
@@ -873,6 +880,7 @@ async fn run_ratatui_app(
                         thread_name: None,
                         update_action: None,
                         exit_reason: ExitReason::UserRequested,
+                        hide_exit_message: false,
                     });
                 }
             }

@@ -96,10 +96,11 @@ pub(crate) struct ApprovalOverlay {
     current_complete: bool,
     done: bool,
     features: Features,
+    brand_name: String,
 }
 
 impl ApprovalOverlay {
-    pub fn new(request: ApprovalRequest, app_event_tx: AppEventSender, features: Features) -> Self {
+    pub fn new(request: ApprovalRequest, app_event_tx: AppEventSender, features: Features, brand_name: String) -> Self {
         let mut view = Self {
             current_request: None,
             queue: Vec::new(),
@@ -109,6 +110,7 @@ impl ApprovalOverlay {
             current_complete: false,
             done: false,
             features,
+            brand_name,
         };
         view.set_current(request);
         view
@@ -121,7 +123,7 @@ impl ApprovalOverlay {
     fn set_current(&mut self, request: ApprovalRequest) {
         self.current_complete = false;
         let header = build_header(&request);
-        let (options, params) = Self::build_options(&request, header, &self.features);
+        let (options, params) = Self::build_options(&request, header, &self.features, &self.brand_name);
         self.current_request = Some(request);
         self.options = options;
         self.list = ListSelectionView::new(params, self.app_event_tx.clone());
@@ -131,6 +133,7 @@ impl ApprovalOverlay {
         request: &ApprovalRequest,
         header: Box<dyn Renderable>,
         _features: &Features,
+        brand_name: &str,
     ) -> (Vec<ApprovalOption>, SelectionViewParams) {
         let (options, title) = match request {
             ApprovalRequest::Exec {
@@ -143,6 +146,7 @@ impl ApprovalOverlay {
                     available_decisions,
                     network_approval_context.as_ref(),
                     additional_permissions.as_ref(),
+                    brand_name,
                 ),
                 network_approval_context.as_ref().map_or_else(
                     || "Would you like to run the following command?".to_string(),
@@ -155,7 +159,7 @@ impl ApprovalOverlay {
                 ),
             ),
             ApprovalRequest::ApplyPatch { .. } => (
-                patch_options(),
+                patch_options(brand_name),
                 "Would you like to make the following edits?".to_string(),
             ),
             ApprovalRequest::McpElicitation { server_name, .. } => (
@@ -230,7 +234,7 @@ impl ApprovalOverlay {
             return;
         };
         if request.thread_label().is_none() {
-            let cell = history_cell::new_approval_decision_cell(command.to_vec(), decision.clone());
+            let cell = history_cell::new_approval_decision_cell(command.to_vec(), decision.clone(), &self.brand_name);
             self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
         }
         let thread_id = request.thread_id();
@@ -551,6 +555,7 @@ fn exec_options(
     available_decisions: &[ReviewDecision],
     network_approval_context: Option<&NetworkApprovalContext>,
     additional_permissions: Option<&PermissionProfile>,
+    brand_name: &str,
 ) -> Vec<ApprovalOption> {
     available_decisions
         .iter()
@@ -628,7 +633,7 @@ fn exec_options(
                 additional_shortcuts: vec![key_hint::plain(KeyCode::Char('d'))],
             }),
             ReviewDecision::Abort => Some(ApprovalOption {
-                label: "No, and tell Codex what to do differently".to_string(),
+                label: format!("No, and tell {} what to do differently", brand_name),
                 decision: ApprovalDecision::Review(ReviewDecision::Abort),
                 display_shortcut: Some(key_hint::plain(KeyCode::Esc)),
                 additional_shortcuts: vec![key_hint::plain(KeyCode::Char('n'))],
@@ -675,7 +680,7 @@ fn format_additional_permissions_rule(
     }
 }
 
-fn patch_options() -> Vec<ApprovalOption> {
+fn patch_options(brand_name: &str) -> Vec<ApprovalOption> {
     vec![
         ApprovalOption {
             label: "Yes, proceed".to_string(),
@@ -690,7 +695,7 @@ fn patch_options() -> Vec<ApprovalOption> {
             additional_shortcuts: vec![key_hint::plain(KeyCode::Char('a'))],
         },
         ApprovalOption {
-            label: "No, and tell Codex what to do differently".to_string(),
+            label: format!("No, and tell {} what to do differently", brand_name),
             decision: ApprovalDecision::Review(ReviewDecision::Abort),
             display_shortcut: Some(key_hint::plain(KeyCode::Esc)),
             additional_shortcuts: vec![key_hint::plain(KeyCode::Char('n'))],
@@ -783,7 +788,7 @@ mod tests {
     fn ctrl_c_aborts_and_clears_queue() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults(), "Codex".to_string());
         view.enqueue_request(make_exec_request());
         assert_eq!(CancellationEvent::Handled, view.on_ctrl_c());
         assert!(view.queue.is_empty());
@@ -794,7 +799,7 @@ mod tests {
     fn shortcut_triggers_selection() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults(), "Codex".to_string());
         assert!(!view.is_complete());
         view.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         // We expect at least one thread-scoped approval op message in the queue.
@@ -826,6 +831,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
 
         view.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
@@ -854,6 +860,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
 
         assert_snapshot!(
@@ -887,6 +894,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
         view.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
         let mut saw_op = false;
@@ -944,6 +952,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
         view.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
@@ -969,7 +978,7 @@ mod tests {
             additional_permissions: None,
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, view.desired_height(80)));
         view.render(Rect::new(0, 0, 80, view.desired_height(80)), &mut buf);
 
@@ -1008,6 +1017,7 @@ mod tests {
             ],
             Some(&network_context),
             None,
+            "Codex",
         );
 
         let labels: Vec<String> = options.into_iter().map(|option| option.label).collect();
@@ -1032,6 +1042,7 @@ mod tests {
             ],
             None,
             None,
+            "Codex",
         );
 
         let labels: Vec<String> = options.into_iter().map(|option| option.label).collect();
@@ -1058,6 +1069,7 @@ mod tests {
             &[ReviewDecision::Approved, ReviewDecision::Abort],
             None,
             Some(&additional_permissions),
+            "Codex",
         );
 
         let labels: Vec<String> = options.into_iter().map(|option| option.label).collect();
@@ -1094,7 +1106,7 @@ mod tests {
             }),
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, view.desired_height(120)));
         view.render(Rect::new(0, 0, 120, view.desired_height(120)), &mut buf);
 
@@ -1142,7 +1154,7 @@ mod tests {
             }),
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         assert_snapshot!(
             "approval_overlay_additional_permissions_prompt",
             normalize_snapshot_paths(render_overlay_lines(&view, 120))
@@ -1177,7 +1189,7 @@ mod tests {
             additional_permissions: None,
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         let mut buf = Buffer::empty(Rect::new(0, 0, 100, view.desired_height(100)));
         view.render(Rect::new(0, 0, 100, view.desired_height(100)), &mut buf);
         assert_snapshot!("network_exec_prompt", format!("{buf:?}"));
@@ -1213,7 +1225,7 @@ mod tests {
             "-lc".into(),
             "git add tui/src/render/mod.rs tui/src/render/renderable.rs".into(),
         ];
-        let cell = history_cell::new_approval_decision_cell(command, ReviewDecision::Approved);
+        let cell = history_cell::new_approval_decision_cell(command, ReviewDecision::Approved, "Codex");
         let lines = cell.display_lines(28);
         let rendered: Vec<String> = lines
             .iter()
@@ -1225,7 +1237,7 @@ mod tests {
             })
             .collect();
         let expected = vec![
-            "✔ You approved codex to run".to_string(),
+            "✔ You approved Codex to run".to_string(),
             "  git add tui/src/render/".to_string(),
             "  mod.rs tui/src/render/".to_string(),
             "  renderable.rs this time".to_string(),
@@ -1237,7 +1249,7 @@ mod tests {
     fn enter_sets_last_selected_index_without_dismissing() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults(), "Codex".to_string());
         view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(

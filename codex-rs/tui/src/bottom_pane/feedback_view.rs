@@ -543,6 +543,7 @@ pub(crate) fn feedback_upload_consent_params(
     category: FeedbackCategory,
     rollout_path: Option<std::path::PathBuf>,
     include_connectivity_diagnostics_attachment: bool,
+    brand_name: &str,
 ) -> super::SelectionViewParams {
     use super::popup_consts::standard_popup_hint_line;
     let yes_action: super::SelectionAction = Box::new({
@@ -595,8 +596,7 @@ pub(crate) fn feedback_upload_consent_params(
             super::SelectionItem {
                 name: "Yes".to_string(),
                 description: Some(
-                    "Share the current Codex session logs with the team for troubleshooting."
-                        .to_string(),
+                    format!("Share the current {} session logs with the team for troubleshooting.", brand_name),
                 ),
                 actions: vec![yes_action],
                 dismiss_on_select: true,

@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
@@ -28,6 +29,7 @@ pub(crate) struct WelcomeWidget {
     animation: AsciiAnimation,
     animations_enabled: bool,
     layout_area: Cell<Option<Rect>>,
+    brand_name: String,
 }
 
 impl KeyboardHandler for WelcomeWidget {
@@ -50,12 +52,14 @@ impl WelcomeWidget {
         is_logged_in: bool,
         request_frame: FrameRequester,
         animations_enabled: bool,
+        brand_name: String,
     ) -> Self {
         Self {
             is_logged_in,
             animation: AsciiAnimation::new(request_frame),
             animations_enabled,
             layout_area: Cell::new(None),
+            brand_name,
         }
     }
 
@@ -86,8 +90,8 @@ impl WidgetRef for &WelcomeWidget {
         lines.push(Line::from(vec![
             "  ".into(),
             "Welcome to ".into(),
-            "Codex".bold(),
-            ", OpenAI's command-line coding agent".into(),
+            Span::from(self.brand_name.clone()).bold(),
+            ", your command-line coding agent".into(),
         ]));
 
         Paragraph::new(lines)
@@ -128,7 +132,7 @@ mod tests {
 
     #[test]
     fn welcome_renders_animation_on_first_draw() {
-        let widget = WelcomeWidget::new(false, FrameRequester::test_dummy(), true);
+        let widget = WelcomeWidget::new(false, FrameRequester::test_dummy(), true, "Codex".to_string());
         let area = Rect::new(0, 0, MIN_ANIMATION_WIDTH, MIN_ANIMATION_HEIGHT);
         let mut buf = Buffer::empty(area);
         let frame_lines = widget.animation.current_frame().lines().count() as u16;
@@ -140,7 +144,7 @@ mod tests {
 
     #[test]
     fn welcome_skips_animation_below_height_breakpoint() {
-        let widget = WelcomeWidget::new(false, FrameRequester::test_dummy(), true);
+        let widget = WelcomeWidget::new(false, FrameRequester::test_dummy(), true, "Codex".to_string());
         let area = Rect::new(0, 0, MIN_ANIMATION_WIDTH, MIN_ANIMATION_HEIGHT - 1);
         let mut buf = Buffer::empty(area);
         (&widget).render(area, &mut buf);
@@ -156,6 +160,7 @@ mod tests {
             animation: AsciiAnimation::with_variants(FrameRequester::test_dummy(), &VARIANTS, 0),
             animations_enabled: true,
             layout_area: Cell::new(None),
+            brand_name: "Codex".to_string(),
         };
 
         let before = widget.animation.current_frame();

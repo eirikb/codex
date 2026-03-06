@@ -74,6 +74,7 @@ struct StatusHistoryCell {
     forked_from: Option<String>,
     token_usage: StatusTokenUsageData,
     rate_limits: StatusRateLimitData,
+    brand_name: String,
 }
 
 #[cfg(test)]
@@ -267,6 +268,7 @@ impl StatusHistoryCell {
             forked_from,
             token_usage,
             rate_limits,
+            brand_name: config.tui_brand_name.clone(),
         }
     }
 
@@ -414,7 +416,7 @@ impl HistoryCell for StatusHistoryCell {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![
             Span::from(format!("{}>_ ", FieldFormatter::INDENT)).dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from(self.brand_name.clone()).bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
         ]));
