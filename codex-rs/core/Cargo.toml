@@ -32,6 +32,7 @@ codex-app-server-protocol = { workspace = true }
 codex-apply-patch = { workspace = true }
 codex-async-utils = { workspace = true }
 codex-client = { workspace = true }
+codex-connectors = { workspace = true }
 codex-config = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-skills = { workspace = true }
@@ -42,8 +43,7 @@ codex-hooks = { workspace = true }
 codex-keyring-store = { workspace = true }
 codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
-codex-artifact-presentation = { workspace = true }
-codex-artifact-spreadsheet = { workspace = true }
+codex-artifacts = { workspace = true }
 codex-protocol = { workspace = true }
 codex-rmcp-client = { workspace = true }
 codex-state = { workspace = true }

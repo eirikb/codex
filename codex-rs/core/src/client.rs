@@ -57,7 +57,7 @@ use codex_api::common::ResponsesWsRequest;
 use codex_api::create_text_param_for_request;
 use codex_api::error::ApiError;
 use codex_api::requests::responses::Compression;
-use codex_otel::OtelManager;
+use codex_otel::SessionTelemetry;
 
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -281,23 +281,44 @@ impl ModelClient {
         &self,
         prompt: &Prompt,
         model_info: &ModelInfo,
-        otel_manager: &OtelManager,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        session_telemetry: &SessionTelemetry,
     ) -> Result<Vec<ResponseItem>> {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(otel_manager);
+        let request_telemetry = Self::build_request_telemetry(session_telemetry);
         let client =
             ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
 
         let instructions = prompt.base_instructions.text.clone();
+        let input = prompt.get_formatted_input();
+        let tools = create_tools_json_for_responses_api(&prompt.tools)?;
+        let reasoning = Self::build_reasoning(model_info, effort, summary);
+        let verbosity = if model_info.support_verbosity {
+            self.state.model_verbosity.or(model_info.default_verbosity)
+        } else {
+            if self.state.model_verbosity.is_some() {
+                warn!(
+                    "model_verbosity is set but ignored as the model does not support verbosity: {}",
+                    model_info.slug
+                );
+            }
+            None
+        };
+        let text = create_text_param_for_request(verbosity, &prompt.output_schema);
         let payload = ApiCompactionInput {
             model: &model_info.slug,
-            input: &prompt.input,
+            input: &input,
             instructions: &instructions,
+            tools,
+            parallel_tool_calls: prompt.parallel_tool_calls,
+            reasoning,
+            text,
         };
 
         let mut extra_headers = self.build_subagent_headers();
@@ -321,7 +342,7 @@ impl ModelClient {
         raw_memories: Vec<ApiRawMemory>,
         model_info: &ModelInfo,
         effort: Option<ReasoningEffortConfig>,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
     ) -> Result<Vec<ApiMemorySummarizeOutput>> {
         if raw_memories.is_empty() {
             return Ok(Vec::new());
@@ -329,7 +350,7 @@ impl ModelClient {
 
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(otel_manager);
+        let request_telemetry = Self::build_request_telemetry(session_telemetry);
         let client =
             ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
@@ -369,10 +390,29 @@ impl ModelClient {
     }
 
     /// Builds request telemetry for unary API calls (e.g., Compact endpoint).
-    fn build_request_telemetry(otel_manager: &OtelManager) -> Arc<dyn RequestTelemetry> {
-        let telemetry = Arc::new(ApiTelemetry::new(otel_manager.clone()));
+    fn build_request_telemetry(session_telemetry: &SessionTelemetry) -> Arc<dyn RequestTelemetry> {
+        let telemetry = Arc::new(ApiTelemetry::new(session_telemetry.clone()));
         let request_telemetry: Arc<dyn RequestTelemetry> = telemetry;
         request_telemetry
+    }
+
+    fn build_reasoning(
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+    ) -> Option<Reasoning> {
+        if model_info.supports_reasoning_summaries {
+            Some(Reasoning {
+                effort: effort.or(model_info.default_reasoning_level),
+                summary: if summary == ReasoningSummaryConfig::None {
+                    None
+                } else {
+                    Some(summary)
+                },
+            })
+        } else {
+            None
+        }
     }
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
@@ -419,14 +459,14 @@ impl ModelClient {
     /// behavior remains consistent across both flows.
     async fn connect_websocket(
         &self,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         api_provider: codex_api::Provider,
         api_auth: CoreAuthProvider,
         turn_state: Option<Arc<OnceLock<String>>>,
         turn_metadata_header: Option<&str>,
     ) -> std::result::Result<ApiWebSocketConnection, ApiError> {
         let headers = self.build_websocket_headers(turn_state.as_ref(), turn_metadata_header);
-        let websocket_telemetry = ModelClientSession::build_websocket_telemetry(otel_manager);
+        let websocket_telemetry = ModelClientSession::build_websocket_telemetry(session_telemetry);
         ApiWebSocketResponsesClient::new(api_provider, api_auth)
             .connect(
                 headers,
@@ -447,14 +487,16 @@ impl ModelClient {
         turn_metadata_header: Option<&str>,
     ) -> ApiHeaderMap {
         let turn_metadata_header = parse_turn_metadata_header(turn_metadata_header);
+        let conversation_id = self.state.conversation_id.to_string();
         let mut headers = build_responses_headers(
             self.state.beta_features_header.as_deref(),
             turn_state,
             turn_metadata_header.as_ref(),
         );
-        headers.extend(build_conversation_headers(Some(
-            self.state.conversation_id.to_string(),
-        )));
+        if let Ok(header_value) = HeaderValue::from_str(&conversation_id) {
+            headers.insert("x-client-request-id", header_value);
+        }
+        headers.extend(build_conversation_headers(Some(conversation_id)));
         headers.insert(
             OPENAI_BETA_HEADER,
             HeaderValue::from_static(RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE),
@@ -660,7 +702,7 @@ impl ModelClientSession {
     /// This performs only connection setup; it never sends prompt payloads.
     pub async fn preconnect_websocket(
         &mut self,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         model_info: &ModelInfo,
     ) -> std::result::Result<(), ApiError> {
         if !self.client.responses_websocket_enabled(model_info) {
@@ -679,7 +721,7 @@ impl ModelClientSession {
         let connection = self
             .client
             .connect_websocket(
-                otel_manager,
+                session_telemetry,
                 client_setup.api_provider,
                 client_setup.api_auth,
                 Some(Arc::clone(&self.turn_state)),
@@ -692,7 +734,7 @@ impl ModelClientSession {
     /// Returns a websocket connection for this turn.
     async fn websocket_connection(
         &mut self,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         api_provider: codex_api::Provider,
         api_auth: CoreAuthProvider,
         turn_metadata_header: Option<&str>,
@@ -713,7 +755,7 @@ impl ModelClientSession {
             let new_conn = self
                 .client
                 .connect_websocket(
-                    otel_manager,
+                    session_telemetry,
                     api_provider,
                     api_auth,
                     Some(turn_state),
@@ -751,7 +793,7 @@ impl ModelClientSession {
         &self,
         prompt: &Prompt,
         model_info: &ModelInfo,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<ServiceTier>,
@@ -764,7 +806,7 @@ impl ModelClientSession {
                 self.client.state.provider.stream_idle_timeout(),
             )
             .map_err(map_api_error)?;
-            let (stream, _last_request_rx) = map_response_stream(stream, otel_manager.clone());
+            let (stream, _last_request_rx) = map_response_stream(stream, session_telemetry.clone());
             return Ok(stream);
         }
 
@@ -775,7 +817,8 @@ impl ModelClientSession {
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
-            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(otel_manager);
+            let (request_telemetry, sse_telemetry) =
+                Self::build_streaming_telemetry(session_telemetry);
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
             let options = self.build_responses_options(turn_metadata_header, compression);
 
@@ -797,7 +840,7 @@ impl ModelClientSession {
 
             match stream_result {
                 Ok(stream) => {
-                    let (stream, _) = map_response_stream(stream, otel_manager.clone());
+                    let (stream, _) = map_response_stream(stream, session_telemetry.clone());
                     return Ok(stream);
                 }
                 Err(ApiError::Transport(
@@ -817,7 +860,7 @@ impl ModelClientSession {
         &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<ServiceTier>,
@@ -852,7 +895,7 @@ impl ModelClientSession {
 
             match self
                 .websocket_connection(
-                    otel_manager,
+                    session_telemetry,
                     client_setup.api_provider,
                     client_setup.api_auth,
                     turn_metadata_header,
@@ -890,7 +933,7 @@ impl ModelClientSession {
                 .await
                 .map_err(map_api_error)?;
             let (stream, last_request_rx) =
-                map_response_stream(stream_result, otel_manager.clone());
+                map_response_stream(stream_result, session_telemetry.clone());
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
         }
@@ -898,17 +941,19 @@ impl ModelClientSession {
 
     /// Builds request and SSE telemetry for streaming API calls.
     fn build_streaming_telemetry(
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
     ) -> (Arc<dyn RequestTelemetry>, Arc<dyn SseTelemetry>) {
-        let telemetry = Arc::new(ApiTelemetry::new(otel_manager.clone()));
+        let telemetry = Arc::new(ApiTelemetry::new(session_telemetry.clone()));
         let request_telemetry: Arc<dyn RequestTelemetry> = telemetry.clone();
         let sse_telemetry: Arc<dyn SseTelemetry> = telemetry;
         (request_telemetry, sse_telemetry)
     }
 
     /// Builds telemetry for the Responses API WebSocket transport.
-    fn build_websocket_telemetry(otel_manager: &OtelManager) -> Arc<dyn WebsocketTelemetry> {
-        let telemetry = Arc::new(ApiTelemetry::new(otel_manager.clone()));
+    fn build_websocket_telemetry(
+        session_telemetry: &SessionTelemetry,
+    ) -> Arc<dyn WebsocketTelemetry> {
+        let telemetry = Arc::new(ApiTelemetry::new(session_telemetry.clone()));
         let websocket_telemetry: Arc<dyn WebsocketTelemetry> = telemetry;
         websocket_telemetry
     }
@@ -918,7 +963,7 @@ impl ModelClientSession {
         &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<ServiceTier>,
@@ -935,7 +980,7 @@ impl ModelClientSession {
             .stream_responses_websocket(
                 prompt,
                 model_info,
-                otel_manager,
+                session_telemetry,
                 effort,
                 summary,
                 service_tier,
@@ -956,7 +1001,7 @@ impl ModelClientSession {
                 Ok(())
             }
             Ok(WebsocketStreamOutcome::FallbackToHttp) => {
-                self.try_switch_fallback_transport(otel_manager, model_info);
+                self.try_switch_fallback_transport(session_telemetry, model_info);
                 Ok(())
             }
             Err(err) => Err(err),
@@ -974,7 +1019,7 @@ impl ModelClientSession {
         &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<ServiceTier>,
@@ -988,7 +1033,7 @@ impl ModelClientSession {
                         .stream_responses_websocket(
                             prompt,
                             model_info,
-                            otel_manager,
+                            session_telemetry,
                             effort,
                             summary,
                             service_tier,
@@ -999,7 +1044,7 @@ impl ModelClientSession {
                     {
                         WebsocketStreamOutcome::Stream(stream) => return Ok(stream),
                         WebsocketStreamOutcome::FallbackToHttp => {
-                            self.try_switch_fallback_transport(otel_manager, model_info);
+                            self.try_switch_fallback_transport(session_telemetry, model_info);
                         }
                     }
                 }
@@ -1007,7 +1052,7 @@ impl ModelClientSession {
                 self.stream_responses_api(
                     prompt,
                     model_info,
-                    otel_manager,
+                    session_telemetry,
                     effort,
                     summary,
                     service_tier,
@@ -1026,14 +1071,14 @@ impl ModelClientSession {
     /// Returns `true` if this call activated fallback, or `false` if fallback was already active.
     pub(crate) fn try_switch_fallback_transport(
         &mut self,
-        otel_manager: &OtelManager,
+        session_telemetry: &SessionTelemetry,
         model_info: &ModelInfo,
     ) -> bool {
         let websocket_enabled = self.client.responses_websocket_enabled(model_info);
         let activated = self.activate_http_fallback(websocket_enabled);
         if activated {
             warn!("falling back to HTTP");
-            otel_manager.counter(
+            session_telemetry.counter(
                 "codex.transport.fallback_to_http",
                 1,
                 &[("from_wire_api", "responses_websocket")],
@@ -1096,7 +1141,7 @@ fn build_responses_headers(
 
 fn map_response_stream<S>(
     api_stream: S,
-    otel_manager: OtelManager,
+    session_telemetry: SessionTelemetry,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -1129,7 +1174,7 @@ where
                     token_usage,
                 }) => {
                     if let Some(usage) = &token_usage {
-                        otel_manager.sse_event_completed(
+                        session_telemetry.sse_event_completed(
                             usage.input_tokens,
                             usage.output_tokens,
                             Some(usage.cached_input_tokens),
@@ -1162,7 +1207,7 @@ where
                 Err(err) => {
                     let mapped = map_api_error(err);
                     if !logged_error {
-                        otel_manager.see_event_completed_failed(&mapped);
+                        session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;
                     }
                     if tx_event.send(Err(mapped)).await.is_err() {
@@ -1198,12 +1243,12 @@ async fn handle_unauthorized(
 }
 
 struct ApiTelemetry {
-    otel_manager: OtelManager,
+    session_telemetry: SessionTelemetry,
 }
 
 impl ApiTelemetry {
-    fn new(otel_manager: OtelManager) -> Self {
-        Self { otel_manager }
+    fn new(session_telemetry: SessionTelemetry) -> Self {
+        Self { session_telemetry }
     }
 }
 
@@ -1216,7 +1261,7 @@ impl RequestTelemetry for ApiTelemetry {
         duration: Duration,
     ) {
         let error_message = error.map(std::string::ToString::to_string);
-        self.otel_manager.record_api_request(
+        self.session_telemetry.record_api_request(
             attempt,
             status.map(|s| s.as_u16()),
             error_message.as_deref(),
@@ -1234,14 +1279,14 @@ impl SseTelemetry for ApiTelemetry {
         >,
         duration: Duration,
     ) {
-        self.otel_manager.log_sse_event(result, duration);
+        self.session_telemetry.log_sse_event(result, duration);
     }
 }
 
 impl WebsocketTelemetry for ApiTelemetry {
     fn on_ws_request(&self, duration: Duration, error: Option<&ApiError>) {
         let error_message = error.map(std::string::ToString::to_string);
-        self.otel_manager
+        self.session_telemetry
             .record_websocket_request(duration, error_message.as_deref());
     }
 
@@ -1250,106 +1295,11 @@ impl WebsocketTelemetry for ApiTelemetry {
         result: &std::result::Result<Option<std::result::Result<Message, Error>>, ApiError>,
         duration: Duration,
     ) {
-        self.otel_manager.record_websocket_event(result, duration);
+        self.session_telemetry
+            .record_websocket_event(result, duration);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::ModelClient;
-    use codex_otel::OtelManager;
-    use codex_protocol::ThreadId;
-    use codex_protocol::openai_models::ModelInfo;
-    use codex_protocol::protocol::SessionSource;
-    use codex_protocol::protocol::SubAgentSource;
-    use pretty_assertions::assert_eq;
-    use serde_json::json;
-
-    fn test_model_client(session_source: SessionSource) -> ModelClient {
-        let provider = crate::model_provider_info::create_oss_provider_with_base_url(
-            "https://example.com/v1",
-            crate::model_provider_info::WireApi::Responses,
-        );
-        ModelClient::new(
-            None,
-            ThreadId::new(),
-            provider,
-            session_source,
-            None,
-            false,
-            false,
-            false,
-            None,
-        )
-    }
-
-    fn test_model_info() -> ModelInfo {
-        serde_json::from_value(json!({
-            "slug": "gpt-test",
-            "display_name": "gpt-test",
-            "description": "desc",
-            "default_reasoning_level": "medium",
-            "supported_reasoning_levels": [
-                {"effort": "medium", "description": "medium"}
-            ],
-            "shell_type": "shell_command",
-            "visibility": "list",
-            "supported_in_api": true,
-            "priority": 1,
-            "upgrade": null,
-            "base_instructions": "base instructions",
-            "model_messages": null,
-            "supports_reasoning_summaries": false,
-            "support_verbosity": false,
-            "default_verbosity": null,
-            "apply_patch_tool_type": null,
-            "truncation_policy": {"mode": "bytes", "limit": 10000},
-            "supports_parallel_tool_calls": false,
-            "supports_image_detail_original": false,
-            "context_window": 272000,
-            "auto_compact_token_limit": null,
-            "experimental_supported_tools": []
-        }))
-        .expect("deserialize test model info")
-    }
-
-    fn test_otel_manager() -> OtelManager {
-        OtelManager::new(
-            ThreadId::new(),
-            "gpt-test",
-            "gpt-test",
-            None,
-            None,
-            None,
-            "test-originator".to_string(),
-            false,
-            "test-terminal".to_string(),
-            SessionSource::Cli,
-        )
-    }
-
-    #[test]
-    fn build_subagent_headers_sets_other_subagent_label() {
-        let client = test_model_client(SessionSource::SubAgent(SubAgentSource::Other(
-            "memory_consolidation".to_string(),
-        )));
-        let headers = client.build_subagent_headers();
-        let value = headers
-            .get("x-openai-subagent")
-            .and_then(|value| value.to_str().ok());
-        assert_eq!(value, Some("memory_consolidation"));
-    }
-
-    #[tokio::test]
-    async fn summarize_memories_returns_empty_for_empty_input() {
-        let client = test_model_client(SessionSource::Cli);
-        let model_info = test_model_info();
-        let otel_manager = test_otel_manager();
-
-        let output = client
-            .summarize_memories(Vec::new(), &model_info, None, &otel_manager)
-            .await
-            .expect("empty summarize request should succeed");
-        assert_eq!(output.len(), 0);
-    }
-}
+#[path = "client_tests.rs"]
+mod tests;
