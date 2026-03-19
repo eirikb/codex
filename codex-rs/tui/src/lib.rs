@@ -587,7 +587,9 @@ async fn run_ratatui_app(
         initial_config.cli_auth_credentials_store_mode,
     );
     let login_status = get_login_status(&initial_config);
-    let should_show_trust_screen_flag = should_show_trust_screen(&initial_config);
+    let bypass_sandbox = cli.dangerously_bypass_approvals_and_sandbox || cli.full_auto;
+    let should_show_trust_screen_flag =
+        !bypass_sandbox && should_show_trust_screen(&initial_config);
     let should_show_onboarding =
         should_show_onboarding(login_status, &initial_config, should_show_trust_screen_flag);
     let mut trust_decision_was_made = false;
@@ -913,7 +915,7 @@ async fn run_ratatui_app(
 
     set_default_client_residency_requirement(config.enforce_residency.value());
     let active_profile = config.active_profile.clone();
-    let should_show_trust_screen = should_show_trust_screen(&config);
+    let should_show_trust_screen = !bypass_sandbox && should_show_trust_screen(&config);
     let should_prompt_windows_sandbox_nux_at_startup = cfg!(target_os = "windows")
         && trust_decision_was_made
         && WindowsSandboxLevel::from_config(&config) == WindowsSandboxLevel::Disabled;

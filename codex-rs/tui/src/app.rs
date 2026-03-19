@@ -1758,16 +1758,20 @@ impl App {
             .get_models_manager()
             .list_models(RefreshStrategy::Offline)
             .await;
-        let exit_info = handle_model_migration_prompt_if_needed(
-            tui,
-            &mut config,
-            model.as_str(),
-            &app_event_tx,
-            &available_models,
-        )
-        .await;
-        if let Some(exit_info) = exit_info {
-            return Ok(exit_info);
+        // Skip model migration prompt when approvals are fully bypassed
+        // (e.g. --dangerously-bypass-approvals-and-sandbox)
+        if *config.permissions.approval_policy.get() != AskForApproval::Never {
+            let exit_info = handle_model_migration_prompt_if_needed(
+                tui,
+                &mut config,
+                model.as_str(),
+                &app_event_tx,
+                &available_models,
+            )
+            .await;
+            if let Some(exit_info) = exit_info {
+                return Ok(exit_info);
+            }
         }
         if let Some(updated_model) = config.model.clone() {
             model = updated_model;
