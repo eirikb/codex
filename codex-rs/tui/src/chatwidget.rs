@@ -4471,6 +4471,14 @@ impl ChatWidget {
                 };
                 self.set_service_tier_selection(next_tier);
             }
+            SlashCommand::Flex => {
+                let next_tier = if matches!(self.config.service_tier, Some(ServiceTier::Flex)) {
+                    None
+                } else {
+                    Some(ServiceTier::Flex)
+                };
+                self.set_service_tier_selection(next_tier);
+            }
             SlashCommand::Realtime => {
                 if !self.realtime_conversation_enabled() {
                     return;
@@ -4783,6 +4791,31 @@ impl ChatWidget {
                     }
                     _ => {
                         self.add_error_message("Usage: /fast [on|off|status]".to_string());
+                    }
+                }
+            }
+            SlashCommand::Flex => {
+                if trimmed.is_empty() {
+                    self.dispatch_command(cmd);
+                    return;
+                }
+                match trimmed.to_ascii_lowercase().as_str() {
+                    "on" => self.set_service_tier_selection(Some(ServiceTier::Flex)),
+                    "off" => self.set_service_tier_selection(/*service_tier*/ None),
+                    "status" => {
+                        let status = if matches!(self.config.service_tier, Some(ServiceTier::Flex))
+                        {
+                            "on"
+                        } else {
+                            "off"
+                        };
+                        self.add_info_message(
+                            format!("Flex mode is {status}."),
+                            /*hint*/ None,
+                        );
+                    }
+                    _ => {
+                        self.add_error_message("Usage: /flex [on|off|status]".to_string());
                     }
                 }
             }

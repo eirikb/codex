@@ -14,6 +14,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Fast,
+    Flex,
     Approvals,
     Permissions,
     #[strum(serialize = "setup-default-sandbox")]
@@ -95,6 +96,7 @@ impl SlashCommand {
             SlashCommand::MemoryUpdate => "DO NOT USE".to_string(),
             SlashCommand::Model => "choose what model and reasoning effort to use".to_string(),
             SlashCommand::Fast => "toggle Fast mode to enable fastest inference at 2X plan usage".to_string(),
+            SlashCommand::Flex => "toggle Flex mode to enable cheaper inference".to_string(),
             SlashCommand::Personality => format!("choose a communication style for {brand_name}"),
             SlashCommand::Realtime => "toggle realtime voice mode (experimental)".to_string(),
             SlashCommand::Settings => "configure realtime microphone/speaker".to_string(),
@@ -131,6 +133,7 @@ impl SlashCommand {
                 | SlashCommand::Rename
                 | SlashCommand::Plan
                 | SlashCommand::Fast
+                | SlashCommand::Flex
                 | SlashCommand::SandboxReadRoot
         )
     }
@@ -146,6 +149,7 @@ impl SlashCommand {
             // | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::Fast
+            | SlashCommand::Flex
             | SlashCommand::Personality
             | SlashCommand::Approvals
             | SlashCommand::Permissions
