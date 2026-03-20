@@ -38,22 +38,26 @@ pub enum SlashCommand {
     Mention,
     Status,
     DebugConfig,
+    Title,
     Statusline,
     Theme,
     Mcp,
     Apps,
+    Plugins,
     Logout,
     Quit,
     Exit,
     Feedback,
     Rollout,
     Ps,
-    Clean,
+    #[strum(to_string = "stop", serialize = "clean")]
+    Stop,
     Clear,
     Personality,
     Realtime,
     Settings,
     TestApproval,
+    #[strum(serialize = "subagents")]
     MultiAgents,
     // Debugging commands.
     #[strum(serialize = "debug-m-drop")]
@@ -82,10 +86,11 @@ impl SlashCommand {
             SlashCommand::Skills => format!("use skills to improve how {brand_name} performs specific tasks"),
             SlashCommand::Status => "show current session configuration and token usage".to_string(),
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging".to_string(),
+            SlashCommand::Title => "configure which items appear in the terminal title".to_string(),
             SlashCommand::Statusline => "configure which items appear in the status line".to_string(),
             SlashCommand::Theme => "choose a syntax highlighting theme".to_string(),
             SlashCommand::Ps => "list background terminals".to_string(),
-            SlashCommand::Clean => "stop all background terminals".to_string(),
+            SlashCommand::Stop => "stop all background terminals".to_string(),
             SlashCommand::MemoryDrop => "DO NOT USE".to_string(),
             SlashCommand::MemoryUpdate => "DO NOT USE".to_string(),
             SlashCommand::Model => "choose what model and reasoning effort to use".to_string(),
@@ -105,6 +110,7 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features".to_string(),
             SlashCommand::Mcp => "list configured MCP tools".to_string(),
             SlashCommand::Apps => "manage apps".to_string(),
+            SlashCommand::Plugins => "browse plugins".to_string(),
             SlashCommand::Logout => format!("log out of {brand_name}"),
             SlashCommand::Rollout => "print the rollout file path".to_string(),
             SlashCommand::TestApproval => "test approval request".to_string(),
@@ -160,9 +166,10 @@ impl SlashCommand {
             | SlashCommand::Status
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
-            | SlashCommand::Clean
+            | SlashCommand::Stop
             | SlashCommand::Mcp
             | SlashCommand::Apps
+            | SlashCommand::Plugins
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,
@@ -174,6 +181,7 @@ impl SlashCommand {
             SlashCommand::Agent | SlashCommand::MultiAgents => true,
             SlashCommand::Statusline => false,
             SlashCommand::Theme => false,
+            SlashCommand::Title => false,
         }
     }
 
@@ -193,4 +201,22 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         .filter(|command| command.is_visible())
         .map(|c| (c.command(), c))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use std::str::FromStr;
+
+    use super::SlashCommand;
+
+    #[test]
+    fn stop_command_is_canonical_name() {
+        assert_eq!(SlashCommand::Stop.command(), "stop");
+    }
+
+    #[test]
+    fn clean_alias_parses_to_stop_command() {
+        assert_eq!(SlashCommand::from_str("clean"), Ok(SlashCommand::Stop));
+    }
 }

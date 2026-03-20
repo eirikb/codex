@@ -14,6 +14,7 @@ use serde_json::Value as JsonValue;
 use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::function_tool::FunctionCallError;
 use crate::tools::ToolRouter;
 use crate::tools::code_mode_description::augment_tool_spec_for_code_mode;
 use crate::tools::code_mode_description::code_mode_tool_reference;
@@ -34,9 +35,15 @@ const CODE_MODE_BRIDGE_SOURCE: &str = include_str!("bridge.js");
 const CODE_MODE_DESCRIPTION_TEMPLATE: &str = include_str!("description.md");
 const CODE_MODE_WAIT_DESCRIPTION_TEMPLATE: &str = include_str!("wait_description.md");
 const CODE_MODE_PRAGMA_PREFIX: &str = "// @exec:";
+const CODE_MODE_ONLY_PREFACE: &str =
+    "Use `exec/wait` tool to run all other tools, do not attempt to use any other tools directly";
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = "exec";
-pub(crate) const WAIT_TOOL_NAME: &str = "exec_wait";
+pub(crate) const WAIT_TOOL_NAME: &str = "wait";
+
+pub(crate) fn is_code_mode_nested_tool(tool_name: &str) -> bool {
+    tool_name != PUBLIC_TOOL_NAME && tool_name != WAIT_TOOL_NAME
+}
 pub(crate) const DEFAULT_EXEC_YIELD_TIME_MS: u64 = 10_000;
 pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = 10_000;
 
@@ -62,16 +69,33 @@ enum CodeModeExecutionStatus {
     Terminated,
 }
 
-pub(crate) fn tool_description(enabled_tool_names: &[String]) -> String {
-    let enabled_list = if enabled_tool_names.is_empty() {
-        "none".to_string()
-    } else {
-        enabled_tool_names.join(", ")
-    };
-    format!(
-        "{}\n- Enabled nested tools: {enabled_list}.",
-        CODE_MODE_DESCRIPTION_TEMPLATE.trim_end()
-    )
+pub(crate) fn tool_description(enabled_tools: &[(String, String)], code_mode_only: bool) -> String {
+    let description_template = CODE_MODE_DESCRIPTION_TEMPLATE.trim_end();
+    if !code_mode_only {
+        return description_template.to_string();
+    }
+
+    let mut sections = vec![
+        CODE_MODE_ONLY_PREFACE.to_string(),
+        description_template.to_string(),
+    ];
+
+    if !enabled_tools.is_empty() {
+        let nested_tool_reference = enabled_tools
+            .iter()
+            .map(|(name, nested_description)| {
+                let global_name = normalize_code_mode_identifier(name);
+                format!(
+                    "### `{global_name}` (`{name}`)\n{}",
+                    nested_description.trim()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        sections.push(nested_tool_reference);
+    }
+
+    sections.join("\n\n")
 }
 
 pub(crate) fn wait_tool_description() -> &'static str {
@@ -87,6 +111,9 @@ async fn handle_node_message(
 ) -> Result<CodeModeSessionProgress, String> {
     match message {
         protocol::NodeToHostMessage::ToolCall { .. } => Err(protocol::unexpected_tool_call_error()),
+        protocol::NodeToHostMessage::Notify { .. } => Err(format!(
+            "unexpected {PUBLIC_TOOL_NAME} notify message in response path"
+        )),
         protocol::NodeToHostMessage::Yielded { content_items, .. } => {
             let mut delta_items = output_content_items_from_json_values(content_items)?;
             delta_items = truncate_code_mode_result(delta_items, poll_max_output_tokens.flatten());
@@ -208,7 +235,7 @@ async fn build_enabled_tools(exec: &ExecContext) -> Vec<protocol::EnabledTool> {
     let mut out = router
         .specs()
         .into_iter()
-        .map(|spec| augment_tool_spec_for_code_mode(spec, true))
+        .map(|spec| augment_tool_spec_for_code_mode(spec, /*code_mode_enabled*/ true))
         .filter_map(enabled_tool_from_spec)
         .collect::<Vec<_>>();
     out.sort_by(|left, right| left.tool_name.cmp(&right.tool_name));
@@ -218,7 +245,7 @@ async fn build_enabled_tools(exec: &ExecContext) -> Vec<protocol::EnabledTool> {
 
 fn enabled_tool_from_spec(spec: ToolSpec) -> Option<protocol::EnabledTool> {
     let tool_name = spec.name().to_string();
-    if tool_name == PUBLIC_TOOL_NAME || tool_name == WAIT_TOOL_NAME {
+    if !is_code_mode_nested_tool(&tool_name) {
         return None;
     }
 
@@ -277,9 +304,11 @@ async fn call_nested_tool(
     tool_name: String,
     input: Option<JsonValue>,
     cancellation_token: tokio_util::sync::CancellationToken,
-) -> JsonValue {
+) -> Result<JsonValue, FunctionCallError> {
     if tool_name == PUBLIC_TOOL_NAME {
-        return JsonValue::String(format!("{PUBLIC_TOOL_NAME} cannot invoke itself"));
+        return Err(FunctionCallError::RespondToModel(format!(
+            "{PUBLIC_TOOL_NAME} cannot invoke itself"
+        )));
     }
 
     let payload =
@@ -290,12 +319,12 @@ async fn call_nested_tool(
                     tool,
                     raw_arguments,
                 },
-                Err(error) => return JsonValue::String(error),
+                Err(error) => return Err(FunctionCallError::RespondToModel(error)),
             }
         } else {
             match build_nested_tool_payload(tool_runtime.find_spec(&tool_name), &tool_name, input) {
                 Ok(payload) => payload,
-                Err(error) => return JsonValue::String(error),
+                Err(error) => return Err(FunctionCallError::RespondToModel(error)),
             }
         };
 
@@ -307,12 +336,8 @@ async fn call_nested_tool(
     };
     let result = tool_runtime
         .handle_tool_call_with_source(call, ToolCallSource::CodeMode, cancellation_token)
-        .await;
-
-    match result {
-        Ok(result) => result.code_mode_result(),
-        Err(error) => JsonValue::String(error.to_string()),
-    }
+        .await?;
+    Ok(result.code_mode_result())
 }
 
 fn tool_kind_for_spec(spec: &ToolSpec) -> protocol::CodeModeToolKind {

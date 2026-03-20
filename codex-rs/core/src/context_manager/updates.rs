@@ -1,9 +1,9 @@
 use crate::codex::PreviousTurnSettings;
 use crate::codex::TurnContext;
 use crate::environment_context::EnvironmentContext;
-use crate::features::Feature;
 use crate::shell::Shell;
 use codex_execpolicy::Policy;
+use codex_features::Feature;
 use codex_protocol::config_types::Personality;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DeveloperInstructions;
@@ -46,6 +46,7 @@ fn build_permissions_update_item(
         exec_policy,
         &next.cwd,
         next.features.enabled(Feature::ExecPermissionApprovals),
+        next.features.enabled(Feature::RequestPermissionsTool),
     ))
 }
 
