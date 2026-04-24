@@ -67,7 +67,6 @@ pub(crate) fn migration_copy_for_models(
     target_display_name: String,
     target_description: Option<String>,
     can_opt_out: bool,
-    brand_name: &str,
 ) -> ModelMigrationCopy {
     if let Some(migration_markdown) = migration_markdown {
         return ModelMigrationCopy {
@@ -83,7 +82,7 @@ pub(crate) fn migration_copy_for_models(
     }
 
     let heading_text = Span::from(format!(
-        "{brand_name} just got an upgrade. Introducing {target_display_name}."
+        "Codex just got an upgrade. Introducing {target_display_name}."
     ))
     .bold();
     let description_line: Line<'static>;
@@ -138,10 +137,9 @@ pub(crate) fn migration_copy_for_models(
 pub(crate) async fn run_model_migration_prompt(
     tui: &mut Tui,
     copy: ModelMigrationCopy,
-    brand_name: String,
 ) -> ModelMigrationOutcome {
     let alt = AltScreenGuard::enter(tui);
-    let mut screen = ModelMigrationScreen::new(alt.tui.frame_requester(), copy, brand_name);
+    let mut screen = ModelMigrationScreen::new(alt.tui.frame_requester(), copy);
 
     let _ = alt.tui.draw(u16::MAX, |frame| {
         frame.render_widget_ref(&screen, frame.area());
@@ -176,18 +174,16 @@ struct ModelMigrationScreen {
     done: bool,
     outcome: ModelMigrationOutcome,
     highlighted_option: MigrationMenuOption,
-    brand_name: String,
 }
 
 impl ModelMigrationScreen {
-    fn new(request_frame: FrameRequester, copy: ModelMigrationCopy, brand_name: String) -> Self {
+    fn new(request_frame: FrameRequester, copy: ModelMigrationCopy) -> Self {
         Self {
             request_frame,
             copy,
             done: false,
             outcome: ModelMigrationOutcome::Accepted,
             highlighted_option: MigrationMenuOption::TryNewModel,
-            brand_name,
         }
     }
 
@@ -345,7 +341,7 @@ impl ModelMigrationScreen {
     fn render_menu(&self, column: &mut ColumnRenderable) {
         column.push(Line::from(""));
         column.push(
-            Paragraph::new(format!("Choose how you'd like {} to proceed.", self.brand_name))
+            Paragraph::new("Choose how you'd like Codex to proceed.")
                 .wrap(Wrap { trim: false })
                 .inset(Insets::tlbr(
                     /*top*/ 0, /*left*/ 2, /*bottom*/ 0, /*right*/ 0,
@@ -436,18 +432,16 @@ mod tests {
             migration_copy_for_models(
                 "gpt-5.1-codex-mini",
                 "gpt-5.1-codex-max",
-                None,
+                /*model_link*/ None,
                 Some(
                     "Upgrade to gpt-5.2-codex for the latest and greatest agentic coding model."
                         .to_string(),
                 ),
-                None,
+                /*migration_markdown*/ None,
                 "gpt-5.1-codex-max".to_string(),
                 Some("Codex-optimized flagship for deep and fast reasoning.".to_string()),
-                true,
-                "Codex",
+                /*can_opt_out*/ true,
             ),
-            "Codex".to_string(),
         );
 
         {
@@ -461,7 +455,7 @@ mod tests {
 
     #[test]
     fn prompt_snapshot_gpt5_family() {
-        let backend = VT100Backend::new(65, 22);
+        let backend = VT100Backend::new(/*width*/ 65, /*height*/ 22);
         let mut terminal = Terminal::with_options(backend).expect("terminal");
         terminal.set_viewport_area(Rect::new(0, 0, 65, 22));
 
@@ -471,14 +465,12 @@ mod tests {
                 "gpt-5",
                 "gpt-5.1",
                 Some("https://www.codex.com/models/gpt-5.1".to_string()),
-                None,
-                None,
+                /*migration_copy*/ None,
+                /*migration_markdown*/ None,
                 "gpt-5.1".to_string(),
                 Some("Broad world knowledge with strong general reasoning.".to_string()),
-                false,
-                "Codex",
+                /*can_opt_out*/ false,
             ),
-            "Codex".to_string(),
         );
         {
             let mut frame = terminal.get_frame();
@@ -490,7 +482,7 @@ mod tests {
 
     #[test]
     fn prompt_snapshot_gpt5_codex() {
-        let backend = VT100Backend::new(60, 22);
+        let backend = VT100Backend::new(/*width*/ 60, /*height*/ 22);
         let mut terminal = Terminal::with_options(backend).expect("terminal");
         terminal.set_viewport_area(Rect::new(0, 0, 60, 22));
 
@@ -500,14 +492,12 @@ mod tests {
                 "gpt-5-codex",
                 "gpt-5.1-codex-max",
                 Some("https://www.codex.com/models/gpt-5.1-codex-max".to_string()),
-                None,
-                None,
+                /*migration_copy*/ None,
+                /*migration_markdown*/ None,
                 "gpt-5.1-codex-max".to_string(),
                 Some("Codex-optimized flagship for deep and fast reasoning.".to_string()),
-                false,
-                "Codex",
+                /*can_opt_out*/ false,
             ),
-            "Codex".to_string(),
         );
         {
             let mut frame = terminal.get_frame();
@@ -519,7 +509,7 @@ mod tests {
 
     #[test]
     fn prompt_snapshot_gpt5_codex_mini() {
-        let backend = VT100Backend::new(60, 22);
+        let backend = VT100Backend::new(/*width*/ 60, /*height*/ 22);
         let mut terminal = Terminal::with_options(backend).expect("terminal");
         terminal.set_viewport_area(Rect::new(0, 0, 60, 22));
 
@@ -529,14 +519,12 @@ mod tests {
                 "gpt-5-codex-mini",
                 "gpt-5.1-codex-mini",
                 Some("https://www.codex.com/models/gpt-5.1-codex-mini".to_string()),
-                None,
-                None,
+                /*migration_copy*/ None,
+                /*migration_markdown*/ None,
                 "gpt-5.1-codex-mini".to_string(),
                 Some("Optimized for codex. Cheaper, faster, but less capable.".to_string()),
-                false,
-                "Codex",
+                /*can_opt_out*/ false,
             ),
-            "Codex".to_string(),
         );
         {
             let mut frame = terminal.get_frame();
@@ -554,14 +542,12 @@ mod tests {
                 "gpt-old",
                 "gpt-new",
                 Some("https://www.codex.com/models/gpt-new".to_string()),
-                None,
-                None,
+                /*migration_copy*/ None,
+                /*migration_markdown*/ None,
                 "gpt-new".to_string(),
                 Some("Latest recommended model for better performance.".to_string()),
-                true,
-                "Codex",
+                /*can_opt_out*/ true,
             ),
-            "Codex".to_string(),
         );
 
         // Simulate pressing Escape
@@ -585,14 +571,12 @@ mod tests {
                 "gpt-old",
                 "gpt-new",
                 Some("https://www.codex.com/models/gpt-new".to_string()),
-                None,
-                None,
+                /*migration_copy*/ None,
+                /*migration_markdown*/ None,
                 "gpt-new".to_string(),
                 Some("Latest recommended model for better performance.".to_string()),
-                true,
-                "Codex",
+                /*can_opt_out*/ true,
             ),
-            "Codex".to_string(),
         );
 
         screen.handle_key(KeyEvent::new(
@@ -622,10 +606,9 @@ mod tests {
                 can_opt_out: false,
                 markdown: Some(long_url.to_string()),
             },
-            "Codex".to_string(),
         );
 
-        let backend = VT100Backend::new(40, 16);
+        let backend = VT100Backend::new(/*width*/ 40, /*height*/ 16);
         let mut terminal = Terminal::with_options(backend).expect("terminal");
         terminal.set_viewport_area(Rect::new(0, 0, 40, 16));
 

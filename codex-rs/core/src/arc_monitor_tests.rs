@@ -1,5 +1,6 @@
 use std::env;
 use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pretty_assertions::assert_eq;
@@ -13,7 +14,8 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use super::*;
-use crate::codex::make_session_and_context;
+use crate::context::ContextualUserFragment;
+use crate::session::tests::make_session_and_context;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::LocalShellExecAction;
@@ -71,11 +73,16 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
         .await;
     session
         .record_into_history(
-            &[
-                crate::contextual_user_message::ENVIRONMENT_CONTEXT_FRAGMENT.into_message(
-                    "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>".to_string(),
+            &[ContextualUserFragment::into(
+                crate::context::EnvironmentContext::new(
+                    Some(PathBuf::from("/tmp")),
+                    "zsh".to_string(),
+                    /*current_date*/ None,
+                    /*timezone*/ None,
+                    /*network*/ None,
+                    /*subagents*/ None,
                 ),
-            ],
+            )],
             &turn_context,
         )
         .await;
@@ -178,6 +185,7 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
         &turn_context,
         serde_json::from_value(serde_json::json!({ "tool": "mcp_tool_call" }))
             .expect("action should deserialize"),
+        "normal",
     )
     .await;
 
@@ -188,7 +196,7 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
                 codex_thread_id: session.conversation_id.to_string(),
                 codex_turn_id: turn_context.sub_id.clone(),
                 conversation_id: Some(session.conversation_id.to_string()),
-                protection_client_callsite: None,
+                protection_client_callsite: Some("normal".to_string()),
             },
             messages: Some(vec![
                 ArcMonitorChatMessage {
@@ -252,7 +260,7 @@ async fn monitor_action_posts_expected_arc_request() {
     let server = MockServer::start().await;
     let (session, mut turn_context) = make_session_and_context().await;
     turn_context.auth_manager = Some(crate::test_support::auth_manager_from_auth(
-        crate::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
     ));
     turn_context.developer_instructions = Some("Developer policy".to_string());
     turn_context.user_instructions = Some("User policy".to_string());
@@ -285,6 +293,7 @@ async fn monitor_action_posts_expected_arc_request() {
                 "codex_thread_id": session.conversation_id.to_string(),
                 "codex_turn_id": turn_context.sub_id.clone(),
                 "conversation_id": session.conversation_id.to_string(),
+                "protection_client_callsite": "normal",
             },
             "messages": [{
                 "role": "user",
@@ -320,6 +329,7 @@ async fn monitor_action_posts_expected_arc_request() {
         &session,
         &turn_context,
         serde_json::json!({ "tool": "mcp_tool_call" }),
+        "normal",
     )
     .await;
 
@@ -377,6 +387,7 @@ async fn monitor_action_uses_env_url_and_token_overrides() {
         &session,
         &turn_context,
         serde_json::json!({ "tool": "mcp_tool_call" }),
+        "normal",
     )
     .await;
 
@@ -403,7 +414,7 @@ async fn monitor_action_rejects_legacy_response_fields() {
 
     let (session, mut turn_context) = make_session_and_context().await;
     turn_context.auth_manager = Some(crate::test_support::auth_manager_from_auth(
-        crate::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
     ));
     let mut config = (*turn_context.config).clone();
     config.chatgpt_base_url = server.uri();
@@ -428,6 +439,7 @@ async fn monitor_action_rejects_legacy_response_fields() {
         &session,
         &turn_context,
         serde_json::json!({ "tool": "mcp_tool_call" }),
+        "normal",
     )
     .await;
 

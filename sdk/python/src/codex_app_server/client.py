@@ -47,7 +47,7 @@ from .retry import retry_on_overload
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 ApprovalHandler = Callable[[str, JsonObject | None], JsonObject]
-RUNTIME_PKG_NAME = "codex-cli-bin"
+RUNTIME_PKG_NAME = "openai-codex-cli-bin"
 
 
 def _params_dict(
@@ -181,6 +181,7 @@ class AppServerClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             cwd=self.config.cwd,
             env=env,
             bufsize=1,
