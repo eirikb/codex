@@ -143,10 +143,16 @@ pub(crate) struct ApprovalOverlay {
     current_complete: bool,
     done: bool,
     features: Features,
+    brand_name: String,
 }
 
 impl ApprovalOverlay {
-    pub fn new(request: ApprovalRequest, app_event_tx: AppEventSender, features: Features) -> Self {
+    pub fn new(
+        request: ApprovalRequest,
+        app_event_tx: AppEventSender,
+        features: Features,
+        brand_name: String,
+    ) -> Self {
         let mut view = Self {
             current_request: None,
             queue: Vec::new(),
@@ -156,6 +162,7 @@ impl ApprovalOverlay {
             current_complete: false,
             done: false,
             features,
+            brand_name,
         };
         view.set_current(request);
         view
@@ -1053,7 +1060,7 @@ mod tests {
     fn ctrl_c_aborts_and_clears_queue() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults(), "Codex".to_string());
         view.enqueue_request(make_exec_request());
         assert_eq!(CancellationEvent::Handled, view.on_ctrl_c());
         assert!(view.queue.is_empty());
@@ -1064,7 +1071,7 @@ mod tests {
     fn shortcut_triggers_selection() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults(), "Codex".to_string());
         assert!(!view.is_complete());
         view.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         // We expect at least one thread-scoped approval op message in the queue.
@@ -1082,7 +1089,7 @@ mod tests {
     fn resolved_request_dismisses_overlay_without_emitting_abort() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults(), "Codex".to_string());
 
         assert!(
             view.dismiss_app_server_request(&ResolvedAppServerRequest::ExecApproval {
@@ -1117,6 +1124,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
 
         view.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
@@ -1145,6 +1153,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
 
         assert_snapshot!(
@@ -1178,6 +1187,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
         view.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
         let mut saw_op = false;
@@ -1235,6 +1245,7 @@ mod tests {
             },
             tx,
             Features::with_defaults(),
+            "Codex".to_string(),
         );
         view.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
@@ -1260,7 +1271,7 @@ mod tests {
             additional_permissions: None,
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, view.desired_height(/*width*/ 80)));
         view.render(
             Rect::new(0, 0, 80, view.desired_height(/*width*/ 80)),
@@ -1415,7 +1426,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
         let mut view =
-            ApprovalOverlay::new(make_permissions_request(), tx, Features::with_defaults());
+            ApprovalOverlay::new(make_permissions_request(), tx, Features::with_defaults(), "Codex".to_string());
 
         view.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
 
@@ -1442,7 +1453,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
         let mut view =
-            ApprovalOverlay::new(make_permissions_request(), tx, Features::with_defaults());
+            ApprovalOverlay::new(make_permissions_request(), tx, Features::with_defaults(), "Codex".to_string());
 
         view.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
@@ -1488,7 +1499,7 @@ mod tests {
             }),
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, view.desired_height(/*width*/ 120)));
         view.render(
             Rect::new(0, 0, 120, view.desired_height(/*width*/ 120)),
@@ -1538,7 +1549,7 @@ mod tests {
             }),
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         assert_snapshot!(
             "approval_overlay_additional_permissions_prompt",
             normalize_snapshot_paths(render_overlay_lines(&view, /*width*/ 120))
@@ -1549,7 +1560,7 @@ mod tests {
     fn permissions_prompt_snapshot() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let view = ApprovalOverlay::new(make_permissions_request(), tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(make_permissions_request(), tx, Features::with_defaults(), "Codex".to_string());
         assert_snapshot!(
             "approval_overlay_permissions_prompt",
             normalize_snapshot_paths(render_overlay_lines(&view, /*width*/ 120))
@@ -1584,7 +1595,7 @@ mod tests {
             additional_permissions: None,
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults(), "Codex".to_string());
         let mut buf = Buffer::empty(Rect::new(0, 0, 100, view.desired_height(/*width*/ 100)));
         view.render(
             Rect::new(0, 0, 100, view.desired_height(/*width*/ 100)),
@@ -1651,7 +1662,7 @@ mod tests {
     fn enter_sets_last_selected_index_without_dismissing() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults(), "Codex".to_string());
         view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(

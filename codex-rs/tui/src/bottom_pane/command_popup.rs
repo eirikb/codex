@@ -73,6 +73,10 @@ impl CommandPopup {
         }
     }
 
+    pub(crate) fn hide_feedback(&mut self) {
+        self.builtins.retain(|(_, cmd)| *cmd != SlashCommand::Feedback);
+    }
+
     /// Update the filter string based on the current composer text. The text
     /// passed in is expected to start with a leading '/'. Everything after the
     /// *first* '/' on the *first* line becomes the active filter that is used

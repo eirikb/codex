@@ -1002,7 +1002,6 @@ mod tests {
         let apply_end_cell: Arc<dyn HistoryCell> = history_cell::new_approval_decision_cell(
             vec!["ls".into()],
             ReviewDecision::Approved,
-            "Codex",
             history_cell::ApprovalDecisionActor::User,
         )
         .into();

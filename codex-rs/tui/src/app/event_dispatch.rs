@@ -1041,15 +1041,13 @@ impl App {
                 }
                 match edits.apply().await {
                     Ok(()) => {
-                        let status = if matches!(
-                            service_tier,
-                            Some(codex_protocol::config_types::ServiceTier::Fast)
-                        ) {
-                            "on"
-                        } else {
-                            "off"
+                        use codex_protocol::config_types::ServiceTier;
+                        let (mode_name, status) = match service_tier {
+                            Some(ServiceTier::Fast) => ("Fast", "on"),
+                            Some(ServiceTier::Flex) => ("Flex", "on"),
+                            None => ("Fast", "off"),
                         };
-                        let mut message = format!("Fast mode set to {status}");
+                        let mut message = format!("{mode_name} mode set to {status}");
                         if let Some(profile) = profile {
                             message.push_str(" for ");
                             message.push_str(profile);
@@ -1058,14 +1056,19 @@ impl App {
                         self.chat_widget.add_info_message(message, /*hint*/ None);
                     }
                     Err(err) => {
-                        tracing::error!(error = %err, "failed to persist fast mode selection");
+                        use codex_protocol::config_types::ServiceTier;
+                        let mode_name = match service_tier {
+                            Some(ServiceTier::Flex) => "Flex",
+                            _ => "Fast",
+                        };
+                        tracing::error!(error = %err, "failed to persist service tier selection");
                         if let Some(profile) = profile {
                             self.chat_widget.add_error_message(format!(
-                                "Failed to save Fast mode for profile `{profile}`: {err}"
+                                "Failed to save {mode_name} mode for profile `{profile}`: {err}"
                             ));
                         } else {
                             self.chat_widget.add_error_message(format!(
-                                "Failed to save default Fast mode: {err}"
+                                "Failed to save default {mode_name} mode: {err}"
                             ));
                         }
                     }

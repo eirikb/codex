@@ -374,6 +374,8 @@ pub(crate) struct ChatComposer {
     connectors_enabled: bool,
     plugins_command_enabled: bool,
     fast_command_enabled: bool,
+    feedback_enabled: bool,
+    brand_name: String,
     personality_command_enabled: bool,
     realtime_conversation_enabled: bool,
     audio_device_selection_enabled: bool,
@@ -519,6 +521,8 @@ impl ChatComposer {
             connectors_enabled: false,
             plugins_command_enabled: false,
             fast_command_enabled: false,
+            feedback_enabled: true,
+            brand_name: "Codex".to_string(),
             personality_command_enabled: false,
             realtime_conversation_enabled: false,
             audio_device_selection_enabled: false,
@@ -604,6 +608,14 @@ impl ChatComposer {
 
     pub fn set_fast_command_enabled(&mut self, enabled: bool) {
         self.fast_command_enabled = enabled;
+    }
+
+    pub fn set_feedback_enabled(&mut self, enabled: bool) {
+        self.feedback_enabled = enabled;
+    }
+
+    pub fn set_brand_name(&mut self, name: String) {
+        self.brand_name = name;
     }
 
     pub fn set_collaboration_mode_indicator(
@@ -3489,6 +3501,9 @@ impl ChatComposer {
                         windows_degraded_sandbox_active: self.windows_degraded_sandbox_active,
                         side_conversation_active: self.side_conversation_active,
                     });
+                    if !self.feedback_enabled {
+                        command_popup.hide_feedback();
+                    }
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                 }

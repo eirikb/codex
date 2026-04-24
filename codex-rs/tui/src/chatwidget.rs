@@ -2376,6 +2376,7 @@ impl ChatWidget {
             category,
             self.current_rollout_path.clone(),
             snapshot.feedback_diagnostics(),
+            &self.config.tui_brand_name,
         );
         self.bottom_pane.show_selection_view(params);
         self.request_redraw();
@@ -5336,6 +5337,12 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.connectors_enabled());
+        widget
+            .bottom_pane
+            .set_feedback_enabled(widget.config.feedback_enabled);
+        widget
+            .bottom_pane
+            .set_brand_name(widget.config.tui_brand_name.clone());
         widget.refresh_status_surfaces();
 
         widget

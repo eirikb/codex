@@ -2257,6 +2257,7 @@ async fn feedback_upload_consent_popup_snapshot() {
                 .to_string(),
             details: vec!["HTTPS_PROXY = hello".to_string()],
         }]),
+        "Codex",
     ));
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
@@ -2276,6 +2277,7 @@ async fn feedback_good_result_consent_popup_includes_connectivity_diagnostics_fi
                 .to_string(),
             details: vec!["HTTPS_PROXY = hello".to_string()],
         }]),
+        "Codex",
     ));
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
